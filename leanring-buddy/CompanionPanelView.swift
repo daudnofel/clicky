@@ -60,6 +60,14 @@ struct CompanionPanelView: View {
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
+                    .frame(height: 12)
+
+                teachModeToggleRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
                     .frame(height: 16)
 
                 dmFarzaButton
@@ -545,6 +553,12 @@ struct CompanionPanelView: View {
 
 
 
+    // MARK: - Teach Mode Toggle
+
+    private var teachModeToggleRow: some View {
+        TeachModeToggleRow(teachModeManager: companionManager.teachModeManager)
+    }
+
     // MARK: - Show Clicky Cursor Toggle
 
     private var showClickyCursorToggleRow: some View {
@@ -758,4 +772,53 @@ struct CompanionPanelView: View {
         }
     }
 
+}
+
+/// Sub-view that owns observation of TeachModeManager so the parent panel
+/// doesn't have to be rebuilt whenever the teach-mode lifecycle changes
+/// state. The toggle drives startTeaching / stopTeaching directly.
+private struct TeachModeToggleRow: View {
+    @ObservedObject var teachModeManager: TeachModeManager
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "graduationcap.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(teachModeManager.isActive ? DS.Colors.accentText : DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Teach me a workflow")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Text(teachModeManager.isActive ? "Watching now. Walk me through it." : "Record a single demo so Clicky can replay it.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { teachModeManager.isActive },
+                set: { shouldBeActive in
+                    Task { @MainActor in
+                        if shouldBeActive {
+                            await teachModeManager.startTeaching(initialUrl: nil)
+                        } else {
+                            _ = await teachModeManager.stopTeaching()
+                        }
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
 }
