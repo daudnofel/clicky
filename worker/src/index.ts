@@ -5,16 +5,14 @@
  * ships with raw API keys. Keys are stored as Cloudflare secrets.
  *
  * Routes:
- *   POST /chat  → Anthropic Messages API (streaming)
- *   POST /tts   → ElevenLabs TTS API
+ *   POST /chat                  → Anthropic Messages API (streaming)
+ *   POST /tts                   → ElevenLabs TTS API
+ *   POST /transcribe-token      → AssemblyAI short-lived streaming token
+ *   POST /workflow/learn        → Extract a WorkflowProfile from a demo recording
+ *   POST /workflow/replay-step  → Next AgentAction for a replay step
  */
 
-interface Env {
-  ANTHROPIC_API_KEY: string;
-  ELEVENLABS_API_KEY: string;
-  ELEVENLABS_VOICE_ID: string;
-  ASSEMBLYAI_API_KEY: string;
-}
+import type { Env } from "./types";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -35,6 +33,16 @@ export default {
 
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
+      }
+
+      if (url.pathname === "/workflow/learn") {
+        const { handleWorkflowLearn } = await import("./workflow_learn");
+        return await handleWorkflowLearn(request, env);
+      }
+
+      if (url.pathname === "/workflow/replay-step") {
+        const { handleWorkflowReplayStep } = await import("./workflow_replay_step");
+        return await handleWorkflowReplayStep(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
