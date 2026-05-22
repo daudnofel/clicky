@@ -11,7 +11,7 @@
 //  which forwards them to DemonstrationRecorder.
 //
 //  PII handling:
-//    - Password fields (kAXSecureTextFieldRole on the AX focused element)
+//    - Password fields (AXSecureTextField role or subrole on the AX focused element)
 //      cause text events to be replaced with {"type": "text_redacted",
 //      "field_kind": "password"}.
 //    - Any other text that PIIRedactor.looksSensitive flags as a credit
@@ -48,6 +48,11 @@ final class EventCaptureTap {
     /// tap can stamp event timestamps without crossing actor boundaries from
     /// the CGEvent callback.
     private var recordingStartWallClockTime: Date = Date()
+
+    /// AX identifier used to detect password fields. Apple ships
+    /// kAXSecureTextFieldSubrole (= "AXSecureTextField") but not kAXSecureTextFieldRole,
+    /// so we compare against the string directly and check both role and subrole.
+    fileprivate static let secureTextFieldIdentifier: String = "AXSecureTextField"
 
     deinit {
         // CFMachPort cleanup is safe to do from any thread.
@@ -265,11 +270,20 @@ final class EventCaptureTap {
         let focusedAxElement = focusedElementCFTypeRef as! AXUIElement
 
         var roleValue: AnyObject?
-        let roleError = AXUIElementCopyAttributeValue(focusedAxElement, kAXRoleAttribute as CFString, &roleValue)
-        guard roleError == .success, let roleString = roleValue as? String else {
-            return false
+        if AXUIElementCopyAttributeValue(focusedAxElement, kAXRoleAttribute as CFString, &roleValue) == .success,
+           let roleString = roleValue as? String,
+           roleString == EventCaptureTap.secureTextFieldIdentifier {
+            return true
         }
-        return roleString == (kAXSecureTextFieldRole as String)
+
+        var subroleValue: AnyObject?
+        if AXUIElementCopyAttributeValue(focusedAxElement, kAXSubroleAttribute as CFString, &subroleValue) == .success,
+           let subroleString = subroleValue as? String,
+           subroleString == EventCaptureTap.secureTextFieldIdentifier {
+            return true
+        }
+
+        return false
     }
 
     // MARK: - Key code → character / non-character key name

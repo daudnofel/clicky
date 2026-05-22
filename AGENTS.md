@@ -68,7 +68,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `TeachModeManager.swift` | ~85 | Owns the teach-mode lifecycle: starts `DemonstrationRecorder`, installs `EventCaptureTap`, and exposes ObservableObject state so the menu bar panel can drive a single "Teach me a workflow" toggle. |
 | `DemonstrationRecorder.swift` | ~280 | Writes a teach-mode demonstration to `~/Library/Application Support/Clicky/recordings/<uuid>/` in the format defined in the apprentice-mode plan's § A.2 (`manifest.json`, `frames/NNNN.jpg`, `events.jsonl`, `transcript.json`). Runs a 2 fps screen capture loop. Transcript wiring is a follow-up. |
-| `EventCaptureTap.swift` | ~330 | Listen-only `CGEvent` tap that captures clicks + keystrokes globally while teach mode is active. Buffers typed text per focused-input session and redacts password fields (via AX `kAXSecureTextFieldRole`) and `PIIRedactor`-flagged contents before they touch disk. |
+| `EventCaptureTap.swift` | ~330 | Listen-only `CGEvent` tap that captures clicks + keystrokes globally while teach mode is active. Buffers typed text per focused-input session and redacts password fields (via AX `AXSecureTextField` role/subrole) and `PIIRedactor`-flagged contents before they touch disk. |
 | `PIIRedactor.swift` | ~45 | Heuristic detector for credit card numbers and US SSNs in captured text. Unit-tested in `PIIRedactorTests.swift`. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
