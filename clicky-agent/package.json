@@ -1,0 +1,25 @@
+{
+  "name": "clicky-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless Chromium agent runner for Clicky / Apprentice mode. Spawned by the Swift app per replay job; drives the browser via the Worker's /workflow/replay-step and streams frames back over a local websocket.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts --ws-port 9876 --worker-url http://localhost:8787",
+    "build": "tsc",
+    "test": "vitest run",
+    "smoke": "tsx tests/smoke_client.ts"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

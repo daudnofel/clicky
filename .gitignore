@@ -1,6 +1,8 @@
 worker/node_modules/
 worker/.dev.vars
 worker/.wrangler/
+clicky-agent/node_modules/
+clicky-agent/dist/
 .DS_Store
 *.xcuserstate
 build/
