@@ -1,5 +1,5 @@
 import type { Env } from "./types";
-import { AnthropicClient } from "./anthropic_client";
+import { getModelClient } from "./get_model_client";
 import { REPLAY_SYSTEM_PROMPT } from "./prompts/replay_system";
 
 /**
@@ -123,11 +123,11 @@ export async function handleWorkflowReplayStep(
   // ALL steps of THIS job, which is the big multi-step cache win.
   const workflowProfileBlock = `WORKFLOW_PROFILE_FOR_REPLAY:\n${JSON.stringify(workflowProfile)}`;
 
-  // Backend selection: commit 1 uses the Anthropic client directly. The
-  // next commit replaces this with a dispatcher (`getModelClient`) that
-  // can also return an Azure OpenAI client based on `WORKFLOW_MODEL_BACKEND`.
-  // Anthropic remains the default in either case.
-  const modelClient = new AnthropicClient(env);
+  // Backend selection: `getModelClient` returns `AnthropicClient` by
+  // default and `AzureOpenAIClient` when `WORKFLOW_MODEL_BACKEND ===
+  // "azure_openai"`. Anthropic is the default that ships in the
+  // submission fork; Azure is opt-in for free dev against Azure credits.
+  const modelClient = getModelClient(env);
   let output;
   try {
     output = await modelClient.generateStructured({
