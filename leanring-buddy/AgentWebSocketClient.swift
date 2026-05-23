@@ -51,12 +51,37 @@ struct QueueItemViewModel: Identifiable, Equatable {
     var updatedAt: Date
 }
 
+/// One of the queue-event message types from § A.4. The websocket
+/// client publishes these to subscribers (e.g. CompanionManager) so
+/// downstream side-effects — like writing the apprentice-mode SQLite
+/// store — can react to the same stream that drives `queueItems`
+/// without us having to fork the decoding logic.
+enum AgentQueueEvent {
+    case started(queueId: String, jobUrl: String?, companyGuess: String?)
+    case progress(queueId: String, step: Int?, intent: String?)
+    case ready(
+        queueId: String,
+        draftedText: String?,
+        filledFields: [String: String],
+        submitSelector: String?
+    )
+    case submitted(queueId: String, didSucceed: Bool, resultMessage: String?)
+    case errored(queueId: String, errorMessage: String?)
+}
+
 @MainActor
 final class AgentWebSocketClient: ObservableObject {
     @Published private(set) var latestFrame: NSImage?
     @Published private(set) var queueItems: [QueueItemViewModel] = []
     @Published private(set) var connected: Bool = false
     @Published private(set) var lastConnectionErrorMessage: String?
+
+    /// Optional sink for queue-event side effects (e.g. SQLite persist).
+    /// Kept as a single closure rather than a Combine publisher because
+    /// the apprentice-mode review queue is the only consumer today and
+    /// a closure is a quarter as much code. If we add a second consumer,
+    /// swap this for a PassthroughSubject.
+    var onQueueEvent: ((AgentQueueEvent) -> Void)?
 
     /// Most-recently-used port; persisted so reconnect attempts know
     /// where to dial after a transient drop.
@@ -213,6 +238,8 @@ final class AgentWebSocketClient: ObservableObject {
 
     private func handleQueueItemStartedMessage(_ json: [String: Any]) {
         guard let queueId = json["queue_id"] as? String else { return }
+        let jobUrl = json["job_url"] as? String
+        let companyGuess = json["company_guess"] as? String
         upsertQueueItem(id: queueId) { existingItem in
             var mutated = existingItem ?? QueueItemViewModel(
                 id: queueId,
@@ -228,25 +255,57 @@ final class AgentWebSocketClient: ObservableObject {
                 updatedAt: Date()
             )
             mutated.status = .drafting
-            mutated.jobUrl = (json["job_url"] as? String) ?? mutated.jobUrl
-            mutated.companyGuess = (json["company_guess"] as? String) ?? mutated.companyGuess
+            mutated.jobUrl = jobUrl ?? mutated.jobUrl
+            mutated.companyGuess = companyGuess ?? mutated.companyGuess
             mutated.updatedAt = Date()
             return mutated
         }
+        // Side-channel notification so downstream side-effects (SQLite,
+        // analytics, etc.) can react without each one having to re-decode
+        // the wire format.
+        onQueueEvent?(.started(
+            queueId: queueId,
+            jobUrl: jobUrl,
+            companyGuess: companyGuess
+        ))
     }
 
     private func handleQueueItemProgressMessage(_ json: [String: Any]) {
         guard let queueId = json["queue_id"] as? String else { return }
+        let stepIndex = json["step"] as? Int
+        let intentString = json["intent"] as? String
         upsertQueueItem(id: queueId) { existingItem in
             guard var mutated = existingItem else { return nil }
-            mutated.lastIntent = (json["intent"] as? String) ?? mutated.lastIntent
+            mutated.lastIntent = intentString ?? mutated.lastIntent
             mutated.updatedAt = Date()
             return mutated
         }
+        onQueueEvent?(.progress(
+            queueId: queueId,
+            step: stepIndex,
+            intent: intentString
+        ))
     }
 
     private func handleQueueItemReadyMessage(_ json: [String: Any]) {
         guard let queueId = json["queue_id"] as? String else { return }
+        let draftedText = json["drafted_text"] as? String
+        var coercedFilledFields: [String: String] = [:]
+        if let filledFieldsRaw = json["filled_fields"] as? [String: Any] {
+            // The wire format permits arbitrary JSON values; the Swift
+            // model coerces everything to String since downstream UI
+            // displays them as plain text.
+            for (fieldKey, fieldValue) in filledFieldsRaw {
+                if let stringValue = fieldValue as? String {
+                    coercedFilledFields[fieldKey] = stringValue
+                } else {
+                    coercedFilledFields[fieldKey] = String(describing: fieldValue)
+                }
+            }
+        }
+        // submit_selector is a first-class field per § A.4 amendment.
+        let submitSelector = json["submit_selector"] as? String
+
         upsertQueueItem(id: queueId) { existingItem in
             var mutated = existingItem ?? QueueItemViewModel(
                 id: queueId,
@@ -262,49 +321,52 @@ final class AgentWebSocketClient: ObservableObject {
                 updatedAt: Date()
             )
             mutated.status = .ready
-            mutated.draftedText = (json["drafted_text"] as? String) ?? mutated.draftedText
-            if let filledFieldsRaw = json["filled_fields"] as? [String: Any] {
-                // The wire format permits arbitrary JSON values; the Swift
-                // model coerces everything to String since downstream UI
-                // displays them as plain text.
-                var coercedFields: [String: String] = [:]
-                for (fieldKey, fieldValue) in filledFieldsRaw {
-                    if let stringValue = fieldValue as? String {
-                        coercedFields[fieldKey] = stringValue
-                    } else {
-                        coercedFields[fieldKey] = String(describing: fieldValue)
-                    }
-                }
-                mutated.filledFields = coercedFields
+            mutated.draftedText = draftedText ?? mutated.draftedText
+            if !coercedFilledFields.isEmpty {
+                mutated.filledFields = coercedFilledFields
             }
-            // submit_selector is a first-class field per § A.4 amendment.
-            mutated.submitSelector = (json["submit_selector"] as? String) ?? mutated.submitSelector
+            mutated.submitSelector = submitSelector ?? mutated.submitSelector
             mutated.updatedAt = Date()
             return mutated
         }
+        onQueueEvent?(.ready(
+            queueId: queueId,
+            draftedText: draftedText,
+            filledFields: coercedFilledFields,
+            submitSelector: submitSelector
+        ))
     }
 
     private func handleQueueItemSubmittedMessage(_ json: [String: Any]) {
         guard let queueId = json["queue_id"] as? String else { return }
+        let resultString = (json["result"] as? String) ?? "failed"
+        let didSucceed = resultString == "success"
+        let resultMessage = json["error_message"] as? String
         upsertQueueItem(id: queueId) { existingItem in
             guard var mutated = existingItem else { return nil }
-            let result = (json["result"] as? String) ?? "failed"
-            mutated.status = result == "success" ? .submitted : .failed
-            mutated.resultMessage = (json["error_message"] as? String) ?? mutated.resultMessage
+            mutated.status = didSucceed ? .submitted : .failed
+            mutated.resultMessage = resultMessage ?? mutated.resultMessage
             mutated.updatedAt = Date()
             return mutated
         }
+        onQueueEvent?(.submitted(
+            queueId: queueId,
+            didSucceed: didSucceed,
+            resultMessage: resultMessage
+        ))
     }
 
     private func handleAgentErrorMessage(_ json: [String: Any]) {
         guard let queueId = json["queue_id"] as? String else { return }
+        let errorMessage = json["error"] as? String
         upsertQueueItem(id: queueId) { existingItem in
             guard var mutated = existingItem else { return nil }
             mutated.status = .failed
-            mutated.lastErrorMessage = (json["error"] as? String) ?? mutated.lastErrorMessage
+            mutated.lastErrorMessage = errorMessage ?? mutated.lastErrorMessage
             mutated.updatedAt = Date()
             return mutated
         }
+        onQueueEvent?(.errored(queueId: queueId, errorMessage: errorMessage))
     }
 
     /// Single mutation entry point so the @Published array fires exactly once

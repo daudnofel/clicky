@@ -86,6 +86,31 @@ final class CompanionManager: ObservableObject {
     /// idle" before kicking anything off).
     lazy var agentSpawner = AgentSpawner(workerBaseUrl: Self.workerBaseURL)
 
+    /// SQLite-backed persistence for the apprentice-mode review queue.
+    /// Initialized eagerly so the on-disk schema exists by the time the
+    /// first websocket event lands. If the migration somehow fails
+    /// (corrupt store, no Application Support directory) we fall back
+    /// to an in-memory store so the app still boots — losing
+    /// persistence is a milder failure than refusing to launch.
+    let queueStore: QueueStore = {
+        do {
+            return try QueueStore(inMemoryDatabase: false)
+        } catch {
+            print("⚠️ CompanionManager: on-disk QueueStore failed (\(error)). Falling back to in-memory.")
+            // The force-try is bounded: in-memory init has no IO and
+            // only fails on truly catastrophic GRDB internal errors, in
+            // which case crashing is more useful than a silent corrupt
+            // state.
+            return try! QueueStore(inMemoryDatabase: true)
+        }
+    }()
+
+    /// @Published wrapper over the store, observed by the SwiftUI Review
+    /// Queue surfaces.
+    lazy var queueStoreObservable: QueueStoreObservable = {
+        QueueStoreObservable(queueStore: queueStore)
+    }()
+
     /// Resizable floating window that renders the agent's headless
     /// Chromium screenshot stream. Lazily constructed so the NSPanel
     /// isn't materialized until the user actually toggles it on.
@@ -99,12 +124,34 @@ final class CompanionManager: ObservableObject {
         return panel
     }()
 
+    /// Resizable floating Review Queue panel. Same lazy pattern as the
+    /// POV window — NSPanel isn't materialized until the user opens it.
+    private lazy var reviewQueuePanel: ReviewQueuePanel = {
+        let panel = ReviewQueuePanel(
+            queueStoreObservable: queueStoreObservable,
+            agentWebSocketClient: agentWebSocketClient
+        )
+        panel.setOnUserClosedPanel { [weak self] in
+            self?.isReviewQueueVisible = false
+        }
+        return panel
+    }()
+
     /// User-facing toggle for the POV window. Default off — the user
     /// opts in from the menu bar panel.
     @Published var isPovWindowVisible: Bool = false {
         didSet {
             guard oldValue != isPovWindowVisible else { return }
             applyPovWindowVisibilityChange()
+        }
+    }
+
+    /// User-facing toggle for the Review Queue panel. Same pattern as
+    /// `isPovWindowVisible` so the menu bar row can two-way bind to it.
+    @Published var isReviewQueueVisible: Bool = false {
+        didSet {
+            guard oldValue != isReviewQueueVisible else { return }
+            applyReviewQueueVisibilityChange()
         }
     }
 
@@ -123,6 +170,23 @@ final class CompanionManager: ObservableObject {
             povWindowPanel.show()
         } else {
             povWindowPanel.hide()
+        }
+    }
+
+    func setReviewQueueVisible(_ shouldBeVisible: Bool) {
+        isReviewQueueVisible = shouldBeVisible
+    }
+
+    private func applyReviewQueueVisibilityChange() {
+        if isReviewQueueVisible {
+            // Showing the queue doesn't require the agent to be running —
+            // SQLite persistence means existing items render even with
+            // the agent offline. We deliberately do NOT call
+            // ensureAgentRunningAndConnected() here so the user can
+            // inspect their backlog without auto-spawning a subprocess.
+            reviewQueuePanel.show()
+        } else {
+            reviewQueuePanel.hide()
         }
     }
 
@@ -250,6 +314,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindAgentQueueEventsToQueueStore()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -544,6 +609,114 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
             }
+    }
+
+    /// Wires the AgentWebSocketClient's per-message side channel into
+    /// the SQLite-backed QueueStore. The websocket already updates its
+    /// own in-memory `queueItems` for the menu bar badge; this routine
+    /// is what makes the cards survive an app restart.
+    ///
+    /// The mapping is intentionally a flat switch (no helper indirection)
+    /// so future contract drift between § A.4 and § A.6 is impossible
+    /// to miss when reading this single method.
+    private func bindAgentQueueEventsToQueueStore() {
+        agentWebSocketClient.onQueueEvent = { [weak self] queueEvent in
+            guard let self else { return }
+            switch queueEvent {
+            case .started(let queueId, let jobUrl, let companyGuess):
+                // We don't know the workflowId or sessionId on a started
+                // event yet — those will be plumbed through once the
+                // Swift side actually originates start_job requests
+                // (Task 8). For V1 we stamp empty strings so the row
+                // exists; updates flow in on later events.
+                let parametersJsonPayload = jobUrl.map {
+                    #"{"job_url":"\#($0)"}"#
+                } ?? "{}"
+                let now = Date()
+                let upsertedItem = QueueItem(
+                    id: queueId,
+                    workflowId: "",
+                    sessionId: "",
+                    parametersJson: parametersJsonPayload,
+                    company: companyGuess,
+                    role: nil,
+                    draftedText: nil,
+                    filledFieldsJson: nil,
+                    submitSelector: nil,
+                    status: .drafting,
+                    agentSessionAlive: true,
+                    createdAt: now,
+                    updatedAt: now
+                )
+                self.queueStoreObservable.upsertAndRefresh(upsertedItem)
+
+            case .progress(let queueId, _, _):
+                // Progress events don't change persisted state; they're
+                // already reflected via the in-memory queueItems' lastIntent.
+                // We do, however, want to keep the row present (no-op
+                // ensure) in case the agent is mid-replay and we just
+                // launched and missed the .started event.
+                if let existing = try? self.queueStore.fetchAll(status: nil).first(where: { $0.id == queueId }) {
+                    _ = existing  // present and accounted for; nothing to write
+                }
+
+            case .ready(let queueId, let draftedText, let filledFields, let submitSelector):
+                let filledFieldsJsonString: String? = {
+                    guard !filledFields.isEmpty else { return nil }
+                    if let encoded = try? JSONSerialization.data(withJSONObject: filledFields),
+                       let string = String(data: encoded, encoding: .utf8) {
+                        return string
+                    }
+                    return nil
+                }()
+                let now = Date()
+                // Look up the existing row (created by an earlier
+                // .started event) and mutate-in-place. Fall back to a
+                // fresh row if we missed the start (e.g. app launched
+                // mid-replay).
+                let mergedItem: QueueItem = {
+                    if let existingItem = try? self.queueStore
+                        .fetchAll(status: nil)
+                        .first(where: { $0.id == queueId }) {
+                        var mutated = existingItem
+                        mutated.status = .ready
+                        mutated.draftedText = draftedText ?? mutated.draftedText
+                        mutated.filledFieldsJson = filledFieldsJsonString ?? mutated.filledFieldsJson
+                        mutated.submitSelector = submitSelector ?? mutated.submitSelector
+                        mutated.updatedAt = now
+                        return mutated
+                    }
+                    return QueueItem(
+                        id: queueId,
+                        workflowId: "",
+                        sessionId: "",
+                        parametersJson: "{}",
+                        company: nil,
+                        role: nil,
+                        draftedText: draftedText,
+                        filledFieldsJson: filledFieldsJsonString,
+                        submitSelector: submitSelector,
+                        status: .ready,
+                        agentSessionAlive: true,
+                        createdAt: now,
+                        updatedAt: now
+                    )
+                }()
+                self.queueStoreObservable.upsertAndRefresh(mergedItem)
+
+            case .submitted(let queueId, let didSucceed, _):
+                self.queueStoreObservable.setStatusAndRefresh(
+                    id: queueId,
+                    newStatus: didSucceed ? .submitted : .failed
+                )
+
+            case .errored(let queueId, _):
+                self.queueStoreObservable.setStatusAndRefresh(
+                    id: queueId,
+                    newStatus: .failed
+                )
+            }
+        }
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
