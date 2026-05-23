@@ -963,48 +963,92 @@ private struct ReviewQueueToggleRow: View {
 /// Sub-view that owns observation of TeachModeManager so the parent panel
 /// doesn't have to be rebuilt whenever the teach-mode lifecycle changes
 /// state. The toggle drives startTeaching / stopTeaching directly.
+///
+/// Subtitle behavior:
+/// - Idle:                          "Record a single demo so Clicky can replay it."
+/// - Teaching + transcript active:  "🎤 Listening — narrate your workflow."
+/// - Teaching + transcript failed:  the teaching subtitle, plus a small amber
+///                                  warning line below the toggle row.
+/// - Teaching + transcript inactive (e.g. never started): the original
+///   "Watching now. Walk me through it." copy. We still tell the user we're
+///   recording the screen even if narration's offline.
 private struct TeachModeToggleRow: View {
     @ObservedObject var teachModeManager: TeachModeManager
 
     var body: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "graduationcap.fill")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(teachModeManager.isActive ? DS.Colors.accentText : DS.Colors.textTertiary)
-                    .frame(width: 16)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "graduationcap.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(teachModeManager.isActive ? DS.Colors.accentText : DS.Colors.textTertiary)
+                        .frame(width: 16)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Teach me a workflow")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(DS.Colors.textSecondary)
-                    Text(teachModeManager.isActive ? "Watching now. Walk me through it." : "Record a single demo so Clicky can replay it.")
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer()
-
-            Toggle("", isOn: Binding(
-                get: { teachModeManager.isActive },
-                set: { shouldBeActive in
-                    Task { @MainActor in
-                        if shouldBeActive {
-                            await teachModeManager.startTeaching(initialUrl: nil)
-                        } else {
-                            _ = await teachModeManager.stopTeaching()
-                        }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Teach me a workflow")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+                        Text(teachToggleSubtitleText)
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(DS.Colors.accent)
-            .scaleEffect(0.8)
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { teachModeManager.isActive },
+                    set: { shouldBeActive in
+                        Task { @MainActor in
+                            if shouldBeActive {
+                                await teachModeManager.startTeaching(initialUrl: nil)
+                            } else {
+                                _ = await teachModeManager.stopTeaching()
+                            }
+                        }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+            }
+
+            // Amber warning subtitle when narration fails. We only show
+            // this when teach mode is currently active — once the user
+            // turns teach off the error message is no longer actionable
+            // and would otherwise linger on the panel forever.
+            if let voiceTranscriptError = teachModeManager.lastVoiceTranscriptError,
+               teachModeManager.isActive {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.warning)
+                    Text(voiceTranscriptError)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.warning)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, 24) // align under the toggle's label column
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    /// Resolves the subtitle text based on the combined teach-mode +
+    /// voice-transcript state. Each branch returns existing copy from
+    /// the original toggle plus the new "🎤 Listening" variant when
+    /// AssemblyAI is actively transcribing.
+    private var teachToggleSubtitleText: String {
+        guard teachModeManager.isActive else {
+            return "Record a single demo so Clicky can replay it."
+        }
+        if teachModeManager.isVoiceTranscriptActive {
+            return "🎤 Listening — narrate your workflow."
+        }
+        return "Watching now. Walk me through it."
     }
 }
