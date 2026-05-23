@@ -68,6 +68,7 @@ export interface AgentAction {
   url?: string;             // for navigate
   drafted_text?: string;    // for draft_text
   target_selector?: string; // for draft_text result
+  submit_selector?: string; // for halt — selector of the final-submit button so Approve & Submit can click it later (§ A.3 amendment)
   confidence: number;       // 0.0..1.0
   reasoning: string;        // human-readable trace (kept short)
 }

@@ -89,11 +89,16 @@ export async function runWorkflowOnUrl(inputs: RunInputs): Promise<void> {
 
     const action: AgentAction = resp.action;
     if (action.type === "halt") {
+      // submit_selector is a first-class field on queue_item_ready (§ A.4),
+      // not buried in filled_fields. Claude embeds it on the halt action so
+      // the eventual Approve & Submit can re-attach to this Playwright page
+      // and click the right button without conflating with form data.
       inputs.emit({
         type: "queue_item_ready",
         queue_id: inputs.queueId,
         drafted_text: draftedText,
         filled_fields: filledFields,
+        submit_selector: action.submit_selector,
       });
       return;
     }
@@ -172,7 +177,10 @@ async function snapshot(page: Page) {
   const screenshotB64 = screenshotBuffer.toString("base64");
   let accessibilityTree: string = "";
   try {
-    accessibilityTree = await page.locator("body").ariaSnapshot();
+    // mode: "ai" gives Claude a snapshot with stable [ref=eN] handles it can
+    // emit back as selectors (Playwright re-resolves them). Rooted at <html>
+    // so dialog/modal content portaled outside <body> is still visible.
+    accessibilityTree = await page.locator("html").ariaSnapshot({ mode: "ai" });
   } catch {
     // Page may have just navigated or be blank; tolerate.
     accessibilityTree = "";

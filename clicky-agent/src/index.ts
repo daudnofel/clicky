@@ -129,7 +129,28 @@ class AgentOrchestrator {
     }
   }
 
+  private startJobInFlight: boolean = false;
+
   private async handleStartJob(message: StartJobMessage): Promise<void> {
+    // V1: serialize start_job. Concurrent jobs would share `this.browser` and
+    // interleave events; Swift owns the queueing instead.
+    if (this.startJobInFlight) {
+      this.server.broadcast({
+        type: "error",
+        queue_id: message.session_id,
+        error: "another start_job is already in flight — wait for it to finish",
+      });
+      return;
+    }
+    this.startJobInFlight = true;
+    try {
+      await this.runStartJob(message);
+    } finally {
+      this.startJobInFlight = false;
+    }
+  }
+
+  private async runStartJob(message: StartJobMessage): Promise<void> {
     const browser = await this.ensureBrowser();
     for (
       let parameterIndex = 0;
@@ -152,6 +173,7 @@ class AgentOrchestrator {
       const filledFields: Record<string, string> = {};
       let draftedText = "";
 
+      let teedSubmitSelector: string | undefined;
       try {
         await runWorkflowOnUrl({
           sessionId: message.session_id,
@@ -163,12 +185,14 @@ class AgentOrchestrator {
           emit: (event) => {
             this.server.broadcast(event);
             // Tee a few fields out so we can store them on the session
-            // for a later approve_submit.
+            // for a later approve_submit. submit_selector is a first-class
+            // queue_item_ready field per § A.4 (not buried in filled_fields).
             if (event.type === "queue_item_ready") {
               const filled =
                 (event.filled_fields as Record<string, string>) ?? {};
               Object.assign(filledFields, filled);
               draftedText = (event.drafted_text as string) ?? "";
+              teedSubmitSelector = event.submit_selector as string | undefined;
             }
           },
           playwright: { page },
@@ -190,7 +214,7 @@ class AgentOrchestrator {
         page,
         draftedText,
         filledFields,
-        submitSelector: filledFields["submit_selector"],
+        submitSelector: teedSubmitSelector,
       });
     }
   }
