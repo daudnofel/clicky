@@ -17,6 +17,12 @@
 //    - Any other text that PIIRedactor.looksSensitive flags as a credit
 //      card or SSN gets replaced with the "sensitive" variant.
 //
+//  Deferred: `url_change` events are listed in § A.2 of the apprentice-mode
+//  plan but are NOT yet captured here. Detecting browser URL changes requires
+//  AppleScript or AX queries against Safari/Chrome and is tracked as a
+//  follow-up. Frame-only captures still let the workflow extractor see the
+//  page visually; URL strings will improve fidelity once added.
+//
 
 import AppKit
 import ApplicationServices

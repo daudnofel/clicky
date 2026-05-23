@@ -26,6 +26,16 @@ struct RecordingManifest: Codable {
     var endedAt: Date?
     var appBundleId: String?
     var initialUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        // The § A.2 wire format names: started_at, ended_at, app, url_at_start.
+        // In-Swift property names stay camelCase; this map keeps both happy.
+        case uuid
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case appBundleId = "app"
+        case initialUrl = "url_at_start"
+    }
 }
 
 struct RecordingEvent: Codable {
