@@ -6,6 +6,40 @@ This file is the checklist of things to verify once an Anthropic API key is in h
 
 ---
 
+## Optional: Azure OpenAI backend
+
+If you don't have Anthropic credits but DO have Azure OpenAI credits, you can flip the backend with one env var while keeping the prompts and contracts byte-identical. Anthropic stays the default that ships in the submission fork.
+
+```bash
+cd fork/worker
+
+# Secret: the Azure API key (rotate when needed).
+npx wrangler secret put AZURE_OPENAI_API_KEY        # paste key
+
+# Non-secret config — either via `wrangler.toml [vars]` (preferred) or
+# `wrangler secret put` (works too, but config-y values fit better in vars).
+# Add this block to wrangler.toml:
+#
+#   [vars]
+#   WORKFLOW_MODEL_BACKEND   = "azure_openai"
+#   AZURE_OPENAI_ENDPOINT    = "https://my-resource.openai.azure.com"
+#   AZURE_OPENAI_DEPLOYMENT  = "gpt-4o"
+#   AZURE_OPENAI_API_VERSION = "2024-10-21"    # optional, this is the default
+#
+# Then deploy:
+npx wrangler deploy
+```
+
+Switch back to Anthropic at any time by removing `WORKFLOW_MODEL_BACKEND` (or setting it to `"anthropic"`). The dispatcher uses strict equality on `"azure_openai"`, so typos safely fall back to Anthropic.
+
+Notes:
+- The Azure path uses native JSON mode (`response_format: {type: "json_object"}`) instead of prompt-engineered JSON, so the model is guaranteed to return parseable JSON.
+- Azure prompt caching is **implicit** for prefixes >= 1024 tokens — no explicit `cache_control` markers like on Anthropic. Multi-step replay still benefits from the shared system+workflow_profile prefix, but you won't see explicit `cache_read_input_tokens` / `cache_creation_input_tokens` in the response (Azure reports caching differently — check the usage breakdown in the Azure portal).
+- Use a **GPT-4o** or **GPT-4.1** deployment — both workflow endpoints send images, so vision support is required.
+- See `worker/AZURE_OPENAI_BACKEND.md` for the full diff between the two paths.
+
+---
+
 ## Setup (one-time)
 
 - [ ] Sign in / sign up to https://console.anthropic.com.
