@@ -629,9 +629,18 @@ final class CompanionManager: ObservableObject {
                 // Swift side actually originates start_job requests
                 // (Task 8). For V1 we stamp empty strings so the row
                 // exists; updates flow in on later events.
-                let parametersJsonPayload = jobUrl.map {
-                    #"{"job_url":"\#($0)"}"#
-                } ?? "{}"
+                // Build parametersJson via JSONSerialization to escape
+                // job_urls that contain quotes/backslashes/control chars
+                // (Task 7 code review I-4).
+                let parametersJsonPayload: String = {
+                    guard let jobUrl else { return "{}" }
+                    let payloadDictionary: [String: String] = ["job_url": jobUrl]
+                    guard let payloadData = try? JSONSerialization.data(withJSONObject: payloadDictionary),
+                          let payloadString = String(data: payloadData, encoding: .utf8) else {
+                        return "{}"
+                    }
+                    return payloadString
+                }()
                 let now = Date()
                 let upsertedItem = QueueItem(
                     id: queueId,
@@ -656,7 +665,7 @@ final class CompanionManager: ObservableObject {
                 // We do, however, want to keep the row present (no-op
                 // ensure) in case the agent is mid-replay and we just
                 // launched and missed the .started event.
-                if let existing = try? self.queueStore.fetchAll(status: nil).first(where: { $0.id == queueId }) {
+                if let existing = try? self.queueStore.fetchOne(id: queueId) {
                     _ = existing  // present and accounted for; nothing to write
                 }
 
@@ -675,9 +684,7 @@ final class CompanionManager: ObservableObject {
                 // fresh row if we missed the start (e.g. app launched
                 // mid-replay).
                 let mergedItem: QueueItem = {
-                    if let existingItem = try? self.queueStore
-                        .fetchAll(status: nil)
-                        .first(where: { $0.id == queueId }) {
+                    if let existingItem = try? self.queueStore.fetchOne(id: queueId) {
                         var mutated = existingItem
                         mutated.status = .ready
                         mutated.draftedText = draftedText ?? mutated.draftedText

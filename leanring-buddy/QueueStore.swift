@@ -135,6 +135,18 @@ final class QueueStore {
         }
     }
 
+    /// Single-row lookup by id. Used by the AgentWebSocketClient → QueueStore
+    /// merge path so each .ready event does an O(1) primary-key read instead
+    /// of pulling the whole table to find one row. Added in response to the
+    /// Task 7 code review (Important #3).
+    func fetchOne(id queueItemIdentifier: String) throws -> QueueItem? {
+        try databaseQueue.read { databaseConnection in
+            try QueueItem
+                .filter(Column("id") == queueItemIdentifier)
+                .fetchOne(databaseConnection)
+        }
+    }
+
     /// Convenience for the inline-edit path: the user is mutating the
     /// drafted body in a TextEditor and we only want to write the one
     /// column, not round-trip the whole row.
