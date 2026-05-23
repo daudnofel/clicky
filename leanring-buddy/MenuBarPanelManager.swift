@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 
 extension Notification.Name {
@@ -35,6 +36,10 @@ final class MenuBarPanelManager: NSObject {
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
+    /// Observes the agent ws client's queueItems so the menu bar icon
+    /// can redraw with a badge when items are awaiting review.
+    private var queueItemsSubscription: AnyCancellable?
+
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
         super.init()
@@ -47,6 +52,16 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+
+        // Re-render the status item icon whenever the queue gains or loses
+        // ready items. We don't filter inside the sink — Equatable on
+        // [QueueItemViewModel] handles dedup downstream.
+        queueItemsSubscription = companionManager.agentWebSocketClient.$queueItems
+            .receive(on: RunLoop.main)
+            .sink { [weak self] updatedQueueItems in
+                let readyForReviewCount = updatedQueueItems.filter { $0.status == .ready }.count
+                self?.refreshStatusItemIcon(readyForReviewBadgeCount: readyForReviewCount)
+            }
     }
 
     deinit {
@@ -65,46 +80,116 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeClickyMenuBarIcon()
+        button.image = makeClickyMenuBarIcon(badgeCount: 0)
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
+    /// Re-renders the menu bar icon with the latest review-ready badge
+    /// count. Called by the queueItems Combine subscription whenever
+    /// the agent reports items moving in / out of the .ready status.
+    private func refreshStatusItemIcon(readyForReviewBadgeCount: Int) {
+        guard let button = statusItem?.button else { return }
+        let updatedIcon = makeClickyMenuBarIcon(badgeCount: readyForReviewBadgeCount)
+        // Templating only works for monochrome icons (the triangle is
+        // ok, the badge is not), so we explicitly drop template mode
+        // when a badge is drawn. The triangle still reads fine on both
+        // light + dark menu bars because we paint it in a contrasting
+        // fill below.
+        button.image = updatedIcon
+        button.image?.isTemplate = (readyForReviewBadgeCount == 0)
+    }
+
     /// Draws the clicky triangle as a menu bar icon. Uses the same shape
     /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeClickyMenuBarIcon() -> NSImage {
+    ///
+    /// When `badgeCount > 0`, draws a small filled red circle with the
+    /// count in the upper-right corner — apprentice-mode review queue
+    /// uses this so the user notices ready items without the menu bar
+    /// panel being open.
+    private func makeClickyMenuBarIcon(badgeCount: Int) -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
         image.lockFocus()
 
         let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
+        let triangleCenterX = iconSize * 0.50
+        let triangleCenterY = iconSize * 0.50
+        let triangleHeight = triangleSize * sqrt(3.0) / 2.0
 
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
+        let topVertex = CGPoint(x: triangleCenterX, y: triangleCenterY + triangleHeight / 1.5)
+        let bottomLeftVertex = CGPoint(x: triangleCenterX - triangleSize / 2, y: triangleCenterY - triangleHeight / 3)
+        let bottomRightVertex = CGPoint(x: triangleCenterX + triangleSize / 2, y: triangleCenterY - triangleHeight / 3)
 
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
+        let rotationAngleRadians = 35.0 * .pi / 180.0
+        func rotateAroundTriangleCenter(_ point: CGPoint) -> CGPoint {
+            let deltaX = point.x - triangleCenterX
+            let deltaY = point.y - triangleCenterY
+            let cosineOfAngle = CGFloat(cos(rotationAngleRadians))
+            let sineOfAngle = CGFloat(sin(rotationAngleRadians))
+            return CGPoint(
+                x: triangleCenterX + cosineOfAngle * deltaX - sineOfAngle * deltaY,
+                y: triangleCenterY + sineOfAngle * deltaX + cosineOfAngle * deltaY
+            )
         }
 
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
+        let trianglePath = NSBezierPath()
+        trianglePath.move(to: rotateAroundTriangleCenter(topVertex))
+        trianglePath.line(to: rotateAroundTriangleCenter(bottomLeftVertex))
+        trianglePath.line(to: rotateAroundTriangleCenter(bottomRightVertex))
+        trianglePath.close()
 
         NSColor.black.setFill()
-        path.fill()
+        trianglePath.fill()
+
+        if badgeCount > 0 {
+            drawReviewQueueBadge(
+                badgeCount: badgeCount,
+                onTopOfIconOfSize: iconSize
+            )
+        }
 
         image.unlockFocus()
         return image
+    }
+
+    /// Paints a small filled circle with a number in the upper-right
+    /// corner of the menu bar icon. Used by the apprentice-mode review
+    /// queue to signal items awaiting user approval.
+    private func drawReviewQueueBadge(badgeCount: Int, onTopOfIconOfSize iconSize: CGFloat) {
+        let badgeDiameter: CGFloat = 9
+        let badgeOriginX = iconSize - badgeDiameter
+        let badgeOriginY = iconSize - badgeDiameter
+        let badgeRect = NSRect(
+            x: badgeOriginX,
+            y: badgeOriginY,
+            width: badgeDiameter,
+            height: badgeDiameter
+        )
+
+        let badgeCircle = NSBezierPath(ovalIn: badgeRect)
+        // Bright red so the badge reads instantly against any menu bar
+        // background. We don't use DS tokens here because the NSImage is
+        // template-rendered for the no-badge case; mixing token Colors
+        // would require NSColor bridging anyway.
+        NSColor.systemRed.setFill()
+        badgeCircle.fill()
+
+        // Cap displayed count at 9+ so we don't blow out the badge.
+        let displayedCountText = badgeCount > 9 ? "9+" : "\(badgeCount)"
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 7, weight: .bold),
+            .foregroundColor: NSColor.white
+        ]
+        let attributedDisplayedCount = NSAttributedString(
+            string: displayedCountText,
+            attributes: textAttributes
+        )
+        let textSize = attributedDisplayedCount.size()
+        let textOriginX = badgeRect.midX - textSize.width / 2
+        let textOriginY = badgeRect.midY - textSize.height / 2
+        attributedDisplayedCount.draw(at: NSPoint(x: textOriginX, y: textOriginY))
     }
 
     /// Opens the panel automatically on app launch so the user sees
