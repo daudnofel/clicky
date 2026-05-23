@@ -1,3 +1,42 @@
+# Clicky — Apprentice Mode
+
+A remix of [Clicky](https://github.com/farzaa/clicky) by [@FarzaTV](https://x.com/FarzaTV).
+
+Original Clicky teaches you. This version learns from you.
+
+Toggle "Teach me a workflow," do one job application (or any workflow) by hand once, and the AI captures a structured profile: the procedure, your voice on freeform answers, your decision rules, your reference data. Then drop a list of URLs and it replays the workflow on each, drafts each form in your voice, and queues every one for your 1-click approval. Never auto-submits.
+
+**Demo (75s):** _(link goes here once recorded)_
+
+---
+
+### How it works
+
+A 7-slot **WorkflowProfile** abstraction generalizes across workflows. Same schema fits job applications, IG DM triage, flight comparisons, expense triage — whatever you can demonstrate. Slots: procedure (intent-not-pixel), parameters (what changes per run), decision rules, reference data, optional style/voice profile, stop condition, output format.
+
+Architecture: existing Clicky Swift app, extended with a `DemonstrationRecorder`, a `POVWindowPanel`, and a `ReviewQueuePanel`. Two new routes on the Cloudflare Worker: `/workflow/learn` (Claude vision over keyframes + events → WorkflowProfile JSON) and `/workflow/replay-step` (per-step decision-maker, cached `workflow_profile` block per job for ~30%+ cost savings). A new Node + Playwright subprocess spawned per replay drives headless Chromium, streams frames over a local websocket into the Swift POV window.
+
+Design + implementation plans in `docs/plans/` (workspace, not in the repo).
+
+### Try it
+
+Read the original setup instructions below — Cloudflare Worker + Xcode build are unchanged. Two new packages to add:
+
+1. `cd worker && npm install` (vitest is new; the worker routes have mocked tests).
+2. `cd ../clicky-agent && npm install && npx playwright install chromium`.
+3. In Xcode, add the new Swift files to the `leanring-buddy` target (see `docs/plans/2026-05-22-status-when-user-returns.md` for the explicit list) and add the **GRDB.swift** SwiftPM package dependency.
+4. Cmd+R. Toggle "Teach me a workflow" in the menu bar panel, demonstrate one workflow, then "Show Clicky's POV" + "Show Review Queue."
+
+### License
+
+MIT. Same as the upstream. Credit to Farza is non-negotiable; the architecture, the cursor metaphor, and 90% of the Swift code are his.
+
+---
+
+> Original README below — left intact because this README is a remix, not a rewrite.
+
+---
+
 Update: April 27, 2026.
 
 Hi there! I'm Farza, the guy that made Clicky.
