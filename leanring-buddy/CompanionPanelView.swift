@@ -14,6 +14,11 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
 
+    /// Currently-presented workflow for the WorkflowRunSheet, or nil if no
+    /// sheet is showing. Set by WorkflowListView when the user taps Run on
+    /// a row. Bound to `.sheet(item:)` further down.
+    @State private var workflowSelectedForRun: SavedWorkflowProfile?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
@@ -70,6 +75,14 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 8)
 
+                workflowsSection
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 8)
+
                 povWindowToggleRow
                     .padding(.horizontal, 16)
             }
@@ -103,6 +116,36 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        // Present the Run sheet when a workflow gets selected from the
+        // WorkflowListView. .sheet(item:) auto-dismisses when the binding
+        // returns to nil (which the sheet does via @Environment(\.dismiss)).
+        .sheet(item: $workflowSelectedForRun) { workflowProfileToRun in
+            WorkflowRunSheet(
+                workflowProfile: workflowProfileToRun,
+                agentWebSocketClient: companionManager.agentWebSocketClient,
+                onWillRun: {
+                    // Ensure the Node agent subprocess is running + the
+                    // websocket is connected before we send `start_job`.
+                    // ensureAgentRunningAndConnected is idempotent, so
+                    // calling it on every Run click is safe.
+                    companionManager.ensureAgentRunningAndConnected()
+                }
+            )
+        }
+    }
+
+    // MARK: - Workflows Section
+
+    /// The list of saved workflow profiles, sitting under the Teach toggle.
+    /// Shows an empty-state when the user hasn't demonstrated anything yet,
+    /// a learning spinner while WorkflowLearner is mid-upload, or the row
+    /// list when there's at least one profile.
+    private var workflowsSection: some View {
+        WorkflowListView(
+            workflowLibrary: companionManager.workflowLibrary,
+            workflowLearner: companionManager.workflowLearner,
+            workflowSelectedForRun: $workflowSelectedForRun
+        )
     }
 
     // MARK: - Header
