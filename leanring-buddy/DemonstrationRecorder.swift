@@ -16,6 +16,13 @@
 //  calls through a serial actor-isolated queue so the JSONL file is
 //  monotonically time-ordered.
 //
+//  transcript.json is populated from the live AssemblyAI streaming
+//  session driven by TeachModeTranscriptCollector. The collector hands
+//  TeachModeManager a [TranscriptTurn] on stop, which TeachModeManager
+//  forwards to setTranscriptTurnsForFinalize(_:) right before
+//  calling stop() on the recorder. On empty narration the recorder
+//  writes `{"turns": []}` — always a parseable shape for the worker.
+//
 
 import AppKit
 import Foundation
@@ -86,6 +93,14 @@ final class DemonstrationRecorder {
     private var nextFrameIndex: Int = 0
     private var screenCaptureLoopTask: Task<Void, Never>?
 
+    /// Transcript turns to write into transcript.json on stop(). Set by
+    /// TeachModeManager via setTranscriptTurnsForFinalize(_:) right
+    /// before it calls stop(). When nil or empty, stop() writes
+    /// `{"turns": []}` instead of the legacy `{"placeholder": true}`
+    /// payload so the worker always sees a parseable shape with a
+    /// stable field. § A.2 transcript.json amendment 2026-05-23.
+    private var pendingTranscriptTurnsForFinalize: [TranscriptTurn] = []
+
     /// JSONEncoder used for both manifest.json and events.jsonl. Configured
     /// with ISO-8601 dates so the wire format matches § A.2 exactly.
     private let jsonEncoder: JSONEncoder = {
@@ -154,16 +169,32 @@ final class DemonstrationRecorder {
             currentManifest = manifest
         }
 
-        // Placeholder transcript — the live AssemblyAI transcript is wired
-        // into the recorder in a follow-up commit per the plan's Step 4.
+        // Write the captured AssemblyAI transcript turns to transcript.json
+        // in the § A.2 wire format. If the collector handed us an empty
+        // array (mic denied / user didn't speak / AssemblyAI errored),
+        // we still write `{"turns": []}` so the worker side always sees
+        // a stable shape — never the legacy `{"placeholder": true}`
+        // payload. The pending-turns array is reset here so a recorder
+        // instance can be reused for a second teach session safely.
         let transcriptUrl = recordingDirectoryUrl.appendingPathComponent("transcript.json")
-        let placeholderTranscriptData = try jsonEncoder.encode(["placeholder": true])
-        try placeholderTranscriptData.write(to: transcriptUrl, options: .atomic)
+        let transcriptFilePayload = TeachModeTranscriptFile(turns: pendingTranscriptTurnsForFinalize)
+        let encodedTranscriptData = try jsonEncoder.encode(transcriptFilePayload)
+        try encodedTranscriptData.write(to: transcriptUrl, options: .atomic)
+        pendingTranscriptTurnsForFinalize = []
 
         isRecording = false
         let finishedRecordingDirectoryUrl = recordingDirectoryUrl
         currentRecordingDirectoryUrl = nil
         return finishedRecordingDirectoryUrl
+    }
+
+    /// Set by TeachModeManager just before it calls stop() so the
+    /// recorder can write the real captured narration into
+    /// transcript.json. Passing an empty array (or never calling this
+    /// at all) writes `{"turns": []}` — always a parseable shape for
+    /// the worker side.
+    func setTranscriptTurnsForFinalize(_ turnsForFinalize: [TranscriptTurn]) {
+        pendingTranscriptTurnsForFinalize = turnsForFinalize
     }
 
     /// Appends an event to events.jsonl. Caller does NOT supply the timestamp —
