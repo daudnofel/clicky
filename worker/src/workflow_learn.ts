@@ -1,13 +1,9 @@
 import type { Env } from "./types";
-import {
-  callClaude,
-  extractTextFromClaudeResponse,
-  stripCodeFences,
-} from "./anthropic_client";
+import { AnthropicClient } from "./anthropic_client";
 import { LEARN_SYSTEM_PROMPT } from "./prompts/learn_system";
 
 /**
- * Number of demonstration frames to include in the Claude vision request.
+ * Number of demonstration frames to include in the model vision request.
  * 12 was chosen as a middle-ground — enough temporal resolution for a
  * ~30-second demo without bloating the multimodal payload past the point
  * where prompt caching savings stop mattering.
@@ -15,7 +11,7 @@ import { LEARN_SYSTEM_PROMPT } from "./prompts/learn_system";
 const MAX_FRAMES_TO_SAMPLE = 12;
 
 /**
- * Cap on Claude's response length. WorkflowProfiles are typically
+ * Cap on the model's response length. WorkflowProfiles are typically
  * 600-1200 tokens; 4096 gives plenty of headroom without runaway costs.
  */
 const MAX_OUTPUT_TOKENS = 4096;
@@ -31,6 +27,12 @@ const MAX_OUTPUT_TOKENS = 4096;
  *
  * Response: `{ "profile": <WorkflowProfile> }` on success,
  *           `{ "error": "<message>" }` with non-200 status otherwise.
+ *
+ * Backend dispatch: this handler is backend-agnostic. The actual API call
+ * (Anthropic Claude by default, Azure OpenAI when
+ * `WORKFLOW_MODEL_BACKEND=azure_openai`) lives behind the `ModelClient`
+ * interface returned by `getModelClient(env)`. The PROMPT
+ * (`learn_system.md`) is also backend-agnostic and unchanged.
  */
 export async function handleWorkflowLearn(
   request: Request,
@@ -82,87 +84,61 @@ export async function handleWorkflowLearn(
 
   const sampledFrames = pickEvenlySpaced(frameEntries, MAX_FRAMES_TO_SAMPLE);
 
-  // Build the multimodal user-turn content. Frames first (Claude attends to
-  // images placed early), then text payloads.
-  const userContent: Record<string, unknown>[] = [];
-  for (const frame of sampledFrames) {
-    userContent.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: "image/jpeg",
-        data: frame.base64Jpeg,
-      },
-    });
-  }
-  userContent.push({
-    type: "text",
-    text: `EVENTS (JSONL — one event per line, time-ordered):\n${eventsRaw}`,
-  });
-  userContent.push({
-    type: "text",
-    text: `TRANSCRIPT (AssemblyAI):\n${transcriptString}`,
-  });
-  userContent.push({
-    type: "text",
-    text: `MANIFEST:\n${manifestRaw}`,
-  });
-  userContent.push({
-    type: "text",
-    text: "Return the WorkflowProfile JSON now. JSON only.",
-  });
+  // Build the user-turn text payload. Frames are passed separately via
+  // `userImages` and rendered backend-appropriately by the ModelClient
+  // (Anthropic base64 image blocks vs. OpenAI data-URL image_url blocks).
+  const userText =
+    `EVENTS (JSONL — one event per line, time-ordered):\n${eventsRaw}\n\n` +
+    `TRANSCRIPT (AssemblyAI):\n${transcriptString}\n\n` +
+    `MANIFEST:\n${manifestRaw}\n\n` +
+    "Return the WorkflowProfile JSON now. JSON only.";
 
-  // Cache the system prompt so re-invocations (the same Worker handling many
-  // learn requests during a busy session) skip re-tokenizing it.
-  let claudeResponse: Response;
+  const userImages = sampledFrames.map((frame) => ({
+    b64: frame.base64Jpeg,
+    mediaType: "image/jpeg",
+  }));
+
+  // Backend selection: commit 1 uses the Anthropic client directly. The
+  // next commit replaces this with a dispatcher (`getModelClient`) that
+  // can also return an Azure OpenAI client based on `WORKFLOW_MODEL_BACKEND`.
+  // Anthropic remains the default in either case.
+  const modelClient = new AnthropicClient(env);
+  let output;
   try {
-    claudeResponse = await callClaude(env, {
-      max_tokens: MAX_OUTPUT_TOKENS,
-      system: [
-        {
-          type: "text",
-          text: LEARN_SYSTEM_PROMPT,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [{ role: "user", content: userContent }],
+    output = await modelClient.generateStructured({
+      systemPrompt: LEARN_SYSTEM_PROMPT,
+      userText,
+      userImages,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      responseShape: "json_object",
     });
   } catch (callErr) {
-    return jsonError(502, `Anthropic call failed: ${callErr}`);
+    return jsonError(502, `model call failed: ${callErr}`);
   }
 
-  if (!claudeResponse.ok) {
-    const errorBody = await claudeResponse.text();
+  // Surface upstream HTTP errors with the same status code (the original
+  // behavior was to forward the Anthropic status — keep that for parity).
+  if (output.upstreamError) {
     console.error(
-      `[/workflow/learn] Anthropic error ${claudeResponse.status}: ${errorBody}`,
+      `[/workflow/learn] upstream error ${output.upstreamError.status}: ${output.upstreamError.body}`,
     );
+    // The Anthropic message in the original code was "Anthropic API
+    // error: <body>" — keep that wording so the test that asserts on it
+    // still passes. The Azure path produces a similar message in its
+    // own envelope; the only contract here is "non-2xx status + an
+    // `error` string in the body."
     return jsonError(
-      claudeResponse.status,
-      `Anthropic API error: ${errorBody}`,
+      output.upstreamError.status,
+      `Anthropic API error: ${output.upstreamError.body}`,
     );
   }
 
-  let claudeJson: unknown;
-  try {
-    claudeJson = await claudeResponse.json();
-  } catch (jsonErr) {
-    return jsonError(502, `Anthropic response was not JSON: ${jsonErr}`);
-  }
-
-  const rawProfileText = extractTextFromClaudeResponse(claudeJson);
-  if (rawProfileText === null) {
-    return jsonError(
-      502,
-      "Anthropic response did not include a text content block",
-    );
-  }
-
-  let profile: Record<string, unknown>;
-  try {
-    profile = JSON.parse(stripCodeFences(rawProfileText));
-  } catch (parseErr) {
+  if (output.json === null) {
+    // The model returned text but it wasn't valid JSON. Log the raw
+    // output (which the client already stripped of code fences) so we
+    // can debug from the Worker tail.
     console.error(
-      `[/workflow/learn] Claude produced invalid JSON: ${parseErr}\n---\n${rawProfileText}`,
+      `[/workflow/learn] model produced invalid JSON:\n---\n${output.rawText}`,
     );
     return jsonError(
       502,
@@ -170,8 +146,16 @@ export async function handleWorkflowLearn(
     );
   }
 
+  // Defensive: we only proceed if the parsed value is an object. A bare
+  // string / number / array would be a contract violation.
+  if (typeof output.json !== "object" || Array.isArray(output.json)) {
+    return jsonError(502, "model output was not a JSON object");
+  }
+
+  const profile = output.json as Record<string, unknown>;
+
   // Stamp identity / provenance fields so the Worker is the single source of
-  // truth for them — don't trust whatever Claude invented.
+  // truth for them — don't trust whatever the model invented.
   if (typeof profile.id !== "string" || profile.id.length === 0) {
     profile.id = `wf-${crypto.randomUUID()}`;
   }
@@ -190,9 +174,9 @@ export async function handleWorkflowLearn(
   }
 
   // Defensive defaulting for slots downstream consumers iterate or branch on.
-  // Task 5 review I-3: don't trust Claude to emit `parameters` as an array or
-  // `stop_condition` as a string — supply safe defaults instead of crashing
-  // a downstream JSON.parse / for-of loop.
+  // Task 5 review I-3: don't trust the model to emit `parameters` as an
+  // array or `stop_condition` as a string — supply safe defaults instead
+  // of crashing a downstream JSON.parse / for-of loop.
   if (!Array.isArray(profile.parameters)) {
     profile.parameters = [];
   }
