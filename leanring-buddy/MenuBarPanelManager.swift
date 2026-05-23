@@ -53,13 +53,14 @@ final class MenuBarPanelManager: NSObject {
             self?.hidePanel()
         }
 
-        // Re-render the status item icon whenever the queue gains or loses
-        // ready items. We don't filter inside the sink — Equatable on
-        // [QueueItemViewModel] handles dedup downstream.
+        // Re-render the status item icon only when the *visible* badge count
+        // changes. queue_item_progress events fire many times per replay job
+        // without affecting the .ready count, so map + removeDuplicates spares
+        // a full NSImage.lockFocus + NSBezierPath.fill cycle on every tick.
         queueItemsSubscription = companionManager.agentWebSocketClient.$queueItems
-            .receive(on: RunLoop.main)
-            .sink { [weak self] updatedQueueItems in
-                let readyForReviewCount = updatedQueueItems.filter { $0.status == .ready }.count
+            .map { latestQueueItems in latestQueueItems.filter { $0.status == .ready }.count }
+            .removeDuplicates()
+            .sink { [weak self] readyForReviewCount in
                 self?.refreshStatusItemIcon(readyForReviewBadgeCount: readyForReviewCount)
             }
     }
