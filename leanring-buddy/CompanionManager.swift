@@ -69,6 +69,41 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
+    // MARK: - Apprentice-mode / Workflow Library
+
+    /// Disk-backed store of learned workflow profiles. Eager so the menu
+    /// bar panel can render the workflow list immediately on first open
+    /// without waiting on a lazy init. The directory scan is cheap (a
+    /// handful of small JSON files) so eager construction is harmless.
+    let workflowLibrary = WorkflowLibrary()
+
+    /// Wraps the POST /workflow/learn HTTP call. Lazy because most app
+    /// sessions never trigger a teach-mode learn cycle, and we don't want
+    /// a fresh URLSession sitting in memory for nothing.
+    ///
+    /// Note: the closure captures `self` to share the eager
+    /// workflowLibrary instance — that's what makes a successful learn
+    /// show up in the Workflows list automatically.
+    lazy var workflowLearner: WorkflowLearner = {
+        WorkflowLearner(workerBaseURL: Self.workerBaseURL, workflowLibrary: workflowLibrary)
+    }()
+
+    /// Combine subscription that watches `teachModeManager.lastRecordingDirectoryUrl`
+    /// for changes. When teach mode toggles off, the recorder finishes and
+    /// publishes the new URL — we react by firing a learn job.
+    ///
+    /// We deliberately observe the @Published property (rather than threading
+    /// a closure through TeachModeManager) because:
+    ///   1. TeachModeManager already publishes the URL — there's no second
+    ///      consumer that would justify changing its API.
+    ///   2. The teach toggle row in CompanionPanelView calls
+    ///      `_ = await teachModeManager.stopTeaching()` and throws away the
+    ///      returned URL; rewiring that callsite would force the SwiftUI
+    ///      sub-view to know about WorkflowLearner, which is a worse
+    ///      coupling than this single Combine subscription.
+    private var teachModeRecordingObservation: AnyCancellable?
+
+
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = "http://localhost:8787"
@@ -315,6 +350,7 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         bindAgentQueueEventsToQueueStore()
+        bindTeachModeRecordingFinishedToWorkflowLearner()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -724,6 +760,32 @@ final class CompanionManager: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Watches `teachModeManager.lastRecordingDirectoryUrl` and fires a
+    /// learn job each time it transitions to a new non-nil URL. The
+    /// recorder publishes that URL only after teach mode toggles off and
+    /// the on-disk artifacts have been finalized — so by the time we
+    /// observe it here, manifest.json / events.jsonl / transcript.json
+    /// / frames/*.jpg are all guaranteed to exist.
+    ///
+    /// We use `dropFirst()` so the initial `nil → nil` publication on
+    /// subscription doesn't immediately trigger a no-op learn.
+    private func bindTeachModeRecordingFinishedToWorkflowLearner() {
+        teachModeRecordingObservation = teachModeManager.$lastRecordingDirectoryUrl
+            .dropFirst()
+            .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] finishedRecordingDirectoryUrl in
+                guard let self else { return }
+                // Fire-and-forget the learn task. lastLearnErrorMessage on
+                // WorkflowLearner is what surfaces failures to the panel.
+                Task { @MainActor [weak self] in
+                    await self?.workflowLearner.learn(
+                        recordingDirectoryUrl: finishedRecordingDirectoryUrl
+                    )
+                }
+            }
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
