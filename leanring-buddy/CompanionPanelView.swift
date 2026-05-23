@@ -68,6 +68,14 @@ struct CompanionPanelView: View {
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
+                    .frame(height: 8)
+
+                povWindowToggleRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
                     .frame(height: 16)
 
                 dmFarzaButton
@@ -557,6 +565,49 @@ struct CompanionPanelView: View {
 
     private var teachModeToggleRow: some View {
         TeachModeToggleRow(teachModeManager: companionManager.teachModeManager)
+    }
+
+    // MARK: - POV Window Toggle
+
+    /// Shows / hides the floating "Clicky's POV" window. Lazy-spawns the
+    /// Node agent on first show so the user sees an "agent idle" view
+    /// (and a live connection) even before kicking off a replay.
+    private var povWindowToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.on.rectangle.angled")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(companionManager.isPovWindowVisible ? DS.Colors.accentText : DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Show Clicky's POV")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Text(companionManager.isPovWindowVisible
+                         ? "Live view of what the agent sees."
+                         : "Floating window that mirrors the agent's headless browser.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isPovWindowVisible },
+                set: { shouldBeVisible in
+                    companionManager.setPovWindowVisible(shouldBeVisible)
+                }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Show Clicky Cursor Toggle

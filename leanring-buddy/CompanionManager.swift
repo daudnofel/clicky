@@ -73,6 +73,76 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
+    // MARK: - Apprentice-mode / POV window
+
+    /// Websocket client to the spawned clicky-agent Node subprocess.
+    /// Owned here so the menu bar badge can observe queueItems and so
+    /// the POV window stays subscribed across hide/show toggles.
+    let agentWebSocketClient = AgentWebSocketClient()
+
+    /// Spawns the Node + Playwright subprocess on demand. Lazy: the
+    /// agent is only started the first time a replay job runs (or the
+    /// POV window is shown, since the user may want to see "agent
+    /// idle" before kicking anything off).
+    lazy var agentSpawner = AgentSpawner(workerBaseUrl: Self.workerBaseURL)
+
+    /// Resizable floating window that renders the agent's headless
+    /// Chromium screenshot stream. Lazily constructed so the NSPanel
+    /// isn't materialized until the user actually toggles it on.
+    private lazy var povWindowPanel: POVWindowPanel = {
+        let panel = POVWindowPanel(agentWebSocketClient: agentWebSocketClient)
+        // When the user clicks the panel's close button, mirror that back
+        // into our @Published flag so the menu bar toggle deselects.
+        panel.onUserClosedPanel = { [weak self] in
+            self?.isPovWindowVisible = false
+        }
+        return panel
+    }()
+
+    /// User-facing toggle for the POV window. Default off — the user
+    /// opts in from the menu bar panel.
+    @Published var isPovWindowVisible: Bool = false {
+        didSet {
+            guard oldValue != isPovWindowVisible else { return }
+            applyPovWindowVisibilityChange()
+        }
+    }
+
+    /// True once `agentSpawner.spawn()` has been called at least once and
+    /// the websocket client has been pointed at the agent's port. We use
+    /// this to keep spawn idempotent.
+    private var hasEnsuredAgentRunning: Bool = false
+
+    func setPovWindowVisible(_ shouldBeVisible: Bool) {
+        isPovWindowVisible = shouldBeVisible
+    }
+
+    private func applyPovWindowVisibilityChange() {
+        if isPovWindowVisible {
+            ensureAgentRunningAndConnected()
+            povWindowPanel.show()
+        } else {
+            povWindowPanel.hide()
+        }
+    }
+
+    /// Lazy-spawn the agent subprocess and connect the websocket. Safe to
+    /// call repeatedly. Replay-job entry points (not yet wired — Task 7+)
+    /// should call this too so the agent is available the first time a
+    /// queue item is dispatched.
+    func ensureAgentRunningAndConnected() {
+        do {
+            try agentSpawner.spawn()
+        } catch {
+            print("⚠️ CompanionManager: failed to spawn clicky-agent: \(error)")
+            return
+        }
+        if !hasEnsuredAgentRunning {
+            hasEnsuredAgentRunning = true
+        }
+        agentWebSocketClient.connect(port: agentSpawner.webSocketPort)
+    }
+
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
@@ -301,6 +371,11 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+
+        // Tear down the apprentice-mode plumbing: closing the ws first lets
+        // the agent process exit cleanly on SIGTERM before we kill it.
+        agentWebSocketClient.disconnect()
+        agentSpawner.terminate()
     }
 
     func refreshAllPermissions() {
