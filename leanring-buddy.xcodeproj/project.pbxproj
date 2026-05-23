@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
 		AA00BB062F6500060039DA55 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB052F6500050039DA55 /* PostHog */; };
+		CF5175195B377C6C57E8E2ED /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 1429E7249049D28C363E63A6 /* GRDB */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -37,16 +38,22 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		28F22CC12F56440300A0FC59 /* leanring-buddy */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "leanring-buddy";
 			sourceTree = "<group>";
 		};
 		28F22CCF2F56440300A0FC59 /* leanring-buddyTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "leanring-buddyTests";
 			sourceTree = "<group>";
 		};
 		28F22CD92F56440300A0FC59 /* leanring-buddyUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "leanring-buddyUITests";
 			sourceTree = "<group>";
 		};
@@ -59,6 +66,7 @@
 			files = (
 				AA00BB032F6500030039DA55 /* Sparkle in Frameworks */,
 				AA00BB062F6500060039DA55 /* PostHog in Frameworks */,
+				CF5175195B377C6C57E8E2ED /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +129,7 @@
 			packageProductDependencies = (
 				AA00BB022F6500020039DA55 /* Sparkle */,
 				AA00BB052F6500050039DA55 /* PostHog */,
+				1429E7249049D28C363E63A6 /* GRDB */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* Clicky.app */;
@@ -143,8 +152,6 @@
 				28F22CCF2F56440300A0FC59 /* leanring-buddyTests */,
 			);
 			name = "leanring-buddyTests";
-			packageProductDependencies = (
-			);
 			productName = "leanring-buddyTests";
 			productReference = 28F22CCC2F56440300A0FC59 /* leanring-buddyTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -166,8 +173,6 @@
 				28F22CD92F56440300A0FC59 /* leanring-buddyUITests */,
 			);
 			name = "leanring-buddyUITests";
-			packageProductDependencies = (
-			);
 			productName = "leanring-buddyUITests";
 			productReference = 28F22CD62F56440300A0FC59 /* leanring-buddyUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -207,6 +212,7 @@
 			packageReferences = (
 				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */,
+				E525CE2ACF67A80C2B3F67F3 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -616,9 +622,22 @@
 				minimumVersion = 3.0.0;
 			};
 		};
+		E525CE2ACF67A80C2B3F67F3 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		1429E7249049D28C363E63A6 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E525CE2ACF67A80C2B3F67F3 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
 		AA00BB022F6500020039DA55 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */;

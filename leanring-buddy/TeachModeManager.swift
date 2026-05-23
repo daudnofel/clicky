@@ -14,6 +14,7 @@
 //  as a placeholder for now.
 //
 
+import Combine
 import Foundation
 import SwiftUI
 
@@ -26,12 +27,16 @@ final class TeachModeManager: ObservableObject {
     private let demonstrationRecorder: DemonstrationRecorder
     private let eventCaptureTap: EventCaptureTap
 
+    // Defaults are constructed inside the @MainActor init body instead of as
+    // default-arg expressions because Swift evaluates default args in the
+    // caller's isolation context, which can be nonisolated and fails to
+    // call into @MainActor-isolated initializers like DemonstrationRecorder().
     init(
-        demonstrationRecorder: DemonstrationRecorder = DemonstrationRecorder(),
-        eventCaptureTap: EventCaptureTap = EventCaptureTap()
+        demonstrationRecorder: DemonstrationRecorder? = nil,
+        eventCaptureTap: EventCaptureTap? = nil
     ) {
-        self.demonstrationRecorder = demonstrationRecorder
-        self.eventCaptureTap = eventCaptureTap
+        self.demonstrationRecorder = demonstrationRecorder ?? DemonstrationRecorder()
+        self.eventCaptureTap = eventCaptureTap ?? EventCaptureTap()
     }
 
     func startTeaching(initialUrl: String?) async {
