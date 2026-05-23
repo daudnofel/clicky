@@ -187,12 +187,12 @@ class AgentOrchestrator {
             // Tee a few fields out so we can store them on the session
             // for a later approve_submit. submit_selector is a first-class
             // queue_item_ready field per § A.4 (not buried in filled_fields).
+            // The OutboundAgentMessage discriminated union narrows by `type`
+            // here, so we read the fields without `as` casts.
             if (event.type === "queue_item_ready") {
-              const filled =
-                (event.filled_fields as Record<string, string>) ?? {};
-              Object.assign(filledFields, filled);
-              draftedText = (event.drafted_text as string) ?? "";
-              teedSubmitSelector = event.submit_selector as string | undefined;
+              Object.assign(filledFields, event.filled_fields);
+              draftedText = event.drafted_text ?? "";
+              teedSubmitSelector = event.submit_selector;
             }
           },
           playwright: { page },

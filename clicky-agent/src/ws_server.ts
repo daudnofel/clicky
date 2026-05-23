@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import type { OutboundAgentMessage } from "./types.js";
 
 /**
  * Local-only websocket server (§ A.4).
@@ -47,8 +48,11 @@ export class AgentWebSocketServer {
   /**
    * Broadcast a message to every connected Swift client. There should only
    * ever be one — the Swift app — but multiple sockets are tolerated.
+   *
+   * Typed as the § A.4 OutboundAgentMessage union so missing or renamed
+   * fields fail at compile time, not silently on the Swift side.
    */
-  broadcast(message: Record<string, unknown>): void {
+  broadcast(message: OutboundAgentMessage): void {
     const payload = JSON.stringify(message);
     for (const socket of this.clients) {
       if (socket.readyState === WebSocket.OPEN) {

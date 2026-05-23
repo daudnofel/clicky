@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type {
   AgentAction,
+  OutboundAgentMessage,
   ReferenceData,
   StepHistoryEntry,
   WorkflowProfile,
@@ -21,7 +22,12 @@ export interface RunInputs {
   referenceData: ReferenceData;
   parameters: Record<string, unknown>;
   worker: WorkerClient;
-  emit: (event: Record<string, unknown>) => void;
+  /**
+   * Emit an outbound § A.4 message. Typed as the OutboundAgentMessage union
+   * so any drift between the agent and the Swift client surfaces as a
+   * TypeScript compile error rather than a silent contract break.
+   */
+  emit: (event: OutboundAgentMessage) => void;
   /** Pass `{page}` in prod; pass `undefined` for unit tests. */
   playwright: { page: Page } | undefined;
 }

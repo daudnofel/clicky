@@ -93,3 +93,67 @@ export interface StepHistoryEntry {
   action: AgentAction;
   result: string;
 }
+
+// ---------------------------------------------------------------------------
+// Outbound websocket messages (Node → Swift) — § A.4
+// ---------------------------------------------------------------------------
+//
+// Discriminated union covering every Node→Swift message defined in § A.4.
+// Every emit / broadcast site in the agent must produce a value of this type.
+// A missing or renamed field will surface as a TypeScript compile error rather
+// than as a silent drift between the agent and the Swift client.
+//
+// Field shapes are taken verbatim from the implementation plan; in particular,
+// `submit_selector` is a TOP-LEVEL field on `queue_item_ready` (per the
+// 2026-05-22 § A.3/§ A.4 amendment) — NOT nested inside `filled_fields`.
+
+export interface FrameMessage {
+  type: "frame";
+  queue_id: string;
+  jpeg_b64: string;
+  width: number;
+  height: number;
+}
+
+export interface QueueItemStartedMessage {
+  type: "queue_item_started";
+  queue_id: string;
+  job_url: string;
+  company_guess?: string;
+}
+
+export interface QueueItemProgressMessage {
+  type: "queue_item_progress";
+  queue_id: string;
+  step: number;
+  intent?: string;
+}
+
+export interface QueueItemReadyMessage {
+  type: "queue_item_ready";
+  queue_id: string;
+  drafted_text?: string;
+  filled_fields: Record<string, string>;
+  submit_selector?: string;
+}
+
+export interface QueueItemSubmittedMessage {
+  type: "queue_item_submitted";
+  queue_id: string;
+  result: "success" | "failed";
+  error_message?: string;
+}
+
+export interface ErrorMessage {
+  type: "error";
+  queue_id?: string;
+  error: string;
+}
+
+export type OutboundAgentMessage =
+  | FrameMessage
+  | QueueItemStartedMessage
+  | QueueItemProgressMessage
+  | QueueItemReadyMessage
+  | QueueItemSubmittedMessage
+  | ErrorMessage;

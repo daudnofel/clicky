@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import type { FrameMessage } from "./types.js";
 
 /**
  * FrameStreamer — emits periodic JPEG screenshots of a Playwright Page
@@ -8,7 +9,7 @@ import type { Page } from "playwright";
  * during idle / navigating. The caller decides which rate to use by passing
  * an fps argument to start().
  */
-export type FrameEmit = (msg: Record<string, unknown>) => void;
+export type FrameEmit = (msg: FrameMessage) => void;
 
 export class FrameStreamer {
   private interval: NodeJS.Timeout | null = null;
