@@ -76,6 +76,14 @@ struct CompanionPanelView: View {
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
+                    .frame(height: 8)
+
+                reviewQueueToggleRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
                     .frame(height: 16)
 
                 dmFarzaButton
@@ -567,6 +575,19 @@ struct CompanionPanelView: View {
         TeachModeToggleRow(teachModeManager: companionManager.teachModeManager)
     }
 
+    // MARK: - Review Queue Toggle
+
+    /// Shows / hides the floating Review Queue panel. The badge text
+    /// updates live whenever the agent ws client's queueItems flips a
+    /// row into `.ready`. Pulled out as its own subview so it can
+    /// observe the ws client independently of the parent's identity.
+    private var reviewQueueToggleRow: some View {
+        ReviewQueueToggleRow(
+            companionManager: companionManager,
+            agentWebSocketClient: companionManager.agentWebSocketClient
+        )
+    }
+
     // MARK: - POV Window Toggle
 
     /// Shows / hides the floating "Clicky's POV" window. Lazy-spawns the
@@ -823,6 +844,77 @@ struct CompanionPanelView: View {
         }
     }
 
+}
+
+/// Sub-view that observes the agent ws client's queueItems so the
+/// "N ready" badge updates live without re-rendering the entire
+/// CompanionPanelView. Tapping the row toggles the floating Review
+/// Queue panel via CompanionManager.
+private struct ReviewQueueToggleRow: View {
+    @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var agentWebSocketClient: AgentWebSocketClient
+
+    /// Count of items the user can act on right now. Recomputed on each
+    /// queueItems change — cheap, since the array is small (handful of
+    /// in-flight applications at peak).
+    private var readyForReviewItemCount: Int {
+        agentWebSocketClient.queueItems.filter { $0.status == .ready }.count
+    }
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "tray.full")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(companionManager.isReviewQueueVisible
+                                     ? DS.Colors.accentText
+                                     : DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("Show Review Queue")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+
+                        // Tiny pill showing the live ready-count. Hidden
+                        // when 0 so the row reads clean during quiet
+                        // periods.
+                        if readyForReviewItemCount > 0 {
+                            Text("\(readyForReviewItemCount) ready")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(DS.Colors.textOnAccent)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(DS.Colors.accent)
+                                )
+                        }
+                    }
+                    Text("Approve or discard the agent's drafted applications.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isReviewQueueVisible },
+                set: { shouldBeVisible in
+                    companionManager.setReviewQueueVisible(shouldBeVisible)
+                }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
 }
 
 /// Sub-view that owns observation of TeachModeManager so the parent panel
