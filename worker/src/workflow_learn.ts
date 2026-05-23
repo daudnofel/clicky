@@ -189,6 +189,26 @@ export async function handleWorkflowLearn(
     );
   }
 
+  // Defensive defaulting for slots downstream consumers iterate or branch on.
+  // Task 5 review I-3: don't trust Claude to emit `parameters` as an array or
+  // `stop_condition` as a string — supply safe defaults instead of crashing
+  // a downstream JSON.parse / for-of loop.
+  if (!Array.isArray(profile.parameters)) {
+    profile.parameters = [];
+  }
+  if (typeof profile.stop_condition !== "string") {
+    profile.stop_condition = "submit-ready";
+  }
+  if (typeof profile.output_format !== "string") {
+    profile.output_format = "review-queue-card";
+  }
+  if (!Array.isArray(profile.decision_rules)) {
+    profile.decision_rules = [];
+  }
+  if (!Array.isArray(profile.reference_keys)) {
+    profile.reference_keys = [];
+  }
+
   return new Response(JSON.stringify({ profile }), {
     status: 200,
     headers: { "content-type": "application/json" },

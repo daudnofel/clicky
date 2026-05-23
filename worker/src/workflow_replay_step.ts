@@ -79,7 +79,22 @@ export async function handleWorkflowReplayStep(
     typeof body.current_url === "string" ? body.current_url : "about:blank";
   const screenshotB64 =
     typeof body.screenshot_b64 === "string" ? body.screenshot_b64 : "";
-  const accessibilityTree = body.accessibility_tree ?? "";
+  // accessibility_tree contract: a string (Playwright ariaSnapshot YAML).
+  // Task 5 review I-2: be stricter than the previous "accept anything" path —
+  // if a future caller passes a JSON tree, coerce to a stringified form and
+  // log a console warning. The prompt is tuned for the YAML shape.
+  let accessibilityTree: string;
+  if (typeof body.accessibility_tree === "string") {
+    accessibilityTree = body.accessibility_tree;
+  } else if (body.accessibility_tree == null) {
+    accessibilityTree = "";
+  } else {
+    console.warn(
+      "[/workflow/replay-step] accessibility_tree is not a string; coercing via JSON.stringify. " +
+      "The prompt expects Playwright ariaSnapshot YAML — consider updating the caller.",
+    );
+    accessibilityTree = JSON.stringify(body.accessibility_tree);
+  }
   const stepHistory = Array.isArray(body.step_history) ? body.step_history : [];
 
   // Build the multimodal user-turn content. Image goes first if present
