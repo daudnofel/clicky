@@ -68,9 +68,36 @@ export interface AgentAction {
   url?: string;             // for navigate
   drafted_text?: string;    // for draft_text
   target_selector?: string; // for draft_text result
-  submit_selector?: string; // for halt — selector of the final-submit button so Approve & Submit can click it later (§ A.3 amendment)
+  submit_selector?: string; // for halt — selector of the final-submit button so Approve & Submit can click it later (§ A.3 amendment, 2026-05-22)
+  /**
+   * For halt actions on workflows whose `output_format === "results-list"`.
+   * The model extracts the visible items from the final page and returns
+   * them so the Swift Review Queue can render a list-card variant instead
+   * of the single drafted application card. § A.3 amendment 2026-05-23.
+   *
+   * Decoupled from `submit_selector` (which is for job-application halts);
+   * both can coexist in principle, but in practice a workflow is one mode
+   * or the other.
+   */
+  results?: ResultsListItem[];
   confidence: number;       // 0.0..1.0
   reasoning: string;        // human-readable trace (kept short)
+}
+
+/**
+ * One row in a "results-list" output. § A.3 amendment 2026-05-23.
+ *
+ * Shape is identical to the Swift `ResultsListItem` Codable struct — keep
+ * the two definitions in lockstep. `title` is required; `fields` is an
+ * always-present (possibly empty) string-to-string map of whatever
+ * metadata the user told the agent to capture (salary, location, price,
+ * dates, etc.); `url` is optional and surfaces an "Open" action in the
+ * Swift card.
+ */
+export interface ResultsListItem {
+  title: string;
+  fields: Record<string, string>;
+  url?: string;
 }
 
 export type NextStateHint =
@@ -135,6 +162,13 @@ export interface QueueItemReadyMessage {
   drafted_text?: string;
   filled_fields: Record<string, string>;
   submit_selector?: string;
+  /**
+   * Populated when the workflow's `output_format === "results-list"`.
+   * The Swift app branches on this (or, equivalently, on the workflow's
+   * stored output_format) to render `ResultsListCard` instead of
+   * `ApplicationCard`. § A.4 amendment 2026-05-23.
+   */
+  results?: ResultsListItem[];
 }
 
 export interface QueueItemSubmittedMessage {

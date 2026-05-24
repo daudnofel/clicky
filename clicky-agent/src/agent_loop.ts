@@ -99,12 +99,20 @@ export async function runWorkflowOnUrl(inputs: RunInputs): Promise<void> {
       // not buried in filled_fields. Claude embeds it on the halt action so
       // the eventual Approve & Submit can re-attach to this Playwright page
       // and click the right button without conflating with form data.
+      //
+      // `results` is the peer field added in the § A.3 / § A.4 2026-05-23
+      // amendment. When the workflow's `output_format === "results-list"`
+      // the model extracts the visible items here; we pass them straight
+      // through to the Swift app, which renders ResultsListCard. The Worker
+      // validator (workflow_replay_step.ts) is what guarantees this array,
+      // when present, is well-shaped — we don't re-validate.
       inputs.emit({
         type: "queue_item_ready",
         queue_id: inputs.queueId,
         drafted_text: draftedText,
         filled_fields: filledFields,
         submit_selector: action.submit_selector,
+        results: action.results,
       });
       return;
     }
@@ -122,7 +130,14 @@ export async function runWorkflowOnUrl(inputs: RunInputs): Promise<void> {
           );
           filledFields[action.selector] = String(action.value);
         } else if (action.type === "click" && action.selector) {
-          await inputs.playwright.page.click(action.selector);
+          // force:true bypasses Playwright's "actionability" check that
+          // refuses to click an element when another DOM node (overlay,
+          // tab bar, modal backdrop) intercepts pointer events. Hostile
+          // sites like Google Flights pile invisible layers on top of
+          // form fields; the model sees the field in the screenshot and
+          // a11y tree and is correct that it should be clicked — we just
+          // need to override Playwright's protective heuristic.
+          await inputs.playwright.page.click(action.selector, { force: true });
         } else if (action.type === "navigate" && action.url) {
           await inputs.playwright.page.goto(action.url, {
             waitUntil: "domcontentloaded",
