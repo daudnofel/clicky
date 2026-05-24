@@ -195,6 +195,42 @@ final class CompanionManager: ObservableObject {
     /// this to keep spawn idempotent.
     private var hasEnsuredAgentRunning: Bool = false
 
+    /// Map of `session_id -> outputFormat` that we populate at start_job
+    /// dispatch time so the inbound queue events (`started`, `ready`) can
+    /// be stamped with the right card variant ("review-queue-card" or
+    /// "results-list") on the SQLite row WITHOUT making a runtime lookup
+    /// against `WorkflowLibrary` (which races with profile edits/deletes).
+    ///
+    /// Pruning: we drop a session's entry only when the app exits — the
+    /// memory cost is one short string per replay session, well below
+    /// anything that would justify a TTL or LRU.
+    ///
+    /// This map is populated by `registerStartedSessionOutputFormat`
+    /// (called from WorkflowRunSheet just before it sends start_job).
+    /// § A.4 amendment 2026-05-23.
+    private var sessionIdToWorkflowOutputFormat: [String: String] = [:]
+
+    /// Stash the workflow's `output_format` (§ A.1) under a freshly-minted
+    /// session id so the queue-event side-channel can stamp it on every
+    /// row produced by this session. Called by WorkflowRunSheet at the
+    /// moment it sends the `start_job` ws message so the agent's
+    /// echoed-back `queue_item_started` event arrives with a session id
+    /// we already know about.
+    func registerStartedSessionOutputFormat(
+        sessionId: String,
+        workflowOutputFormat: String
+    ) {
+        sessionIdToWorkflowOutputFormat[sessionId] = workflowOutputFormat
+    }
+
+    /// Looks up the stamped output_format for a session id, defaulting to
+    /// "review-queue-card" if we never saw the start (e.g. the app launched
+    /// mid-replay or the user ran the workflow before the registry path
+    /// landed). Defaulting to the V1 card preserves the existing behavior.
+    private func outputFormatForSessionId(_ sessionId: String) -> String {
+        sessionIdToWorkflowOutputFormat[sessionId] ?? "review-queue-card"
+    }
+
     func setPovWindowVisible(_ shouldBeVisible: Bool) {
         isPovWindowVisible = shouldBeVisible
     }
@@ -660,11 +696,16 @@ final class CompanionManager: ObservableObject {
             guard let self else { return }
             switch queueEvent {
             case .started(let queueId, let jobUrl, let companyGuess):
-                // We don't know the workflowId or sessionId on a started
-                // event yet — those will be plumbed through once the
-                // Swift side actually originates start_job requests
-                // (Task 8). For V1 we stamp empty strings so the row
-                // exists; updates flow in on later events.
+                // We don't know the workflowId on a started event yet
+                // (no plumbing for it on § A.4 today). The sessionId is
+                // derivable from the queueId because the Node agent
+                // constructs queueId as `${session_id}-${index}`. We use
+                // that to stamp `outputFormat` (§ A.4 amendment
+                // 2026-05-23) so ReviewQueueView can pick the right
+                // card variant. The plumbing has a fallback default so
+                // pre-registry sessions still render correctly.
+                let derivedSessionId = Self.derivedSessionIdFromQueueId(queueId)
+                let resolvedOutputFormat = self.outputFormatForSessionId(derivedSessionId)
                 // Build parametersJson via JSONSerialization to escape
                 // job_urls that contain quotes/backslashes/control chars
                 // (Task 7 code review I-4).
@@ -681,13 +722,15 @@ final class CompanionManager: ObservableObject {
                 let upsertedItem = QueueItem(
                     id: queueId,
                     workflowId: "",
-                    sessionId: "",
+                    sessionId: derivedSessionId,
                     parametersJson: parametersJsonPayload,
                     company: companyGuess,
                     role: nil,
                     draftedText: nil,
                     filledFieldsJson: nil,
                     submitSelector: nil,
+                    resultsJson: nil,
+                    outputFormat: resolvedOutputFormat,
                     status: .drafting,
                     agentSessionAlive: true,
                     createdAt: now,
@@ -705,7 +748,7 @@ final class CompanionManager: ObservableObject {
                     _ = existing  // present and accounted for; nothing to write
                 }
 
-            case .ready(let queueId, let draftedText, let filledFields, let submitSelector):
+            case .ready(let queueId, let draftedText, let filledFields, let submitSelector, let results):
                 let filledFieldsJsonString: String? = {
                     guard !filledFields.isEmpty else { return nil }
                     if let encoded = try? JSONSerialization.data(withJSONObject: filledFields),
@@ -713,6 +756,19 @@ final class CompanionManager: ObservableObject {
                         return string
                     }
                     return nil
+                }()
+                // Serialize the [ResultsListItem] array via JSONEncoder so the
+                // on-disk shape is identical to the wire shape. nil if the
+                // halt was a review-queue-card halt (no results payload).
+                let resultsJsonString: String? = {
+                    guard let results, !results.isEmpty else { return nil }
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    guard let encoded = try? encoder.encode(results),
+                          let asString = String(data: encoded, encoding: .utf8) else {
+                        return nil
+                    }
+                    return asString
                 }()
                 let now = Date()
                 // Look up the existing row (created by an earlier
@@ -726,19 +782,26 @@ final class CompanionManager: ObservableObject {
                         mutated.draftedText = draftedText ?? mutated.draftedText
                         mutated.filledFieldsJson = filledFieldsJsonString ?? mutated.filledFieldsJson
                         mutated.submitSelector = submitSelector ?? mutated.submitSelector
+                        mutated.resultsJson = resultsJsonString ?? mutated.resultsJson
                         mutated.updatedAt = now
                         return mutated
                     }
+                    // No prior .started row — synthesize one. Re-derive
+                    // outputFormat by the same session-id route as .started.
+                    let derivedSessionId = Self.derivedSessionIdFromQueueId(queueId)
+                    let resolvedOutputFormat = self.outputFormatForSessionId(derivedSessionId)
                     return QueueItem(
                         id: queueId,
                         workflowId: "",
-                        sessionId: "",
+                        sessionId: derivedSessionId,
                         parametersJson: "{}",
                         company: nil,
                         role: nil,
                         draftedText: draftedText,
                         filledFieldsJson: filledFieldsJsonString,
                         submitSelector: submitSelector,
+                        resultsJson: resultsJsonString,
+                        outputFormat: resolvedOutputFormat,
                         status: .ready,
                         agentSessionAlive: true,
                         createdAt: now,
@@ -760,6 +823,30 @@ final class CompanionManager: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Recover the originating session id from a queue id produced by the
+    /// Node agent. The agent's `runStartJob` constructs queue ids as
+    /// `${session_id}-${parameterIndex}` (see clicky-agent/src/index.ts).
+    /// We split off the trailing `-N` suffix to get the session id back —
+    /// this lets us look up the registered output_format without making the
+    /// agent echo session_id on every queue_item_* message.
+    ///
+    /// If the queue id doesn't end in `-<digits>` we return it unchanged;
+    /// that's a foreign id from a different agent build, and we'll just
+    /// miss the registry lookup and default to "review-queue-card".
+    private static func derivedSessionIdFromQueueId(_ queueId: String) -> String {
+        guard let lastDashIndex = queueId.lastIndex(of: "-") else {
+            return queueId
+        }
+        let suffix = queueId[queueId.index(after: lastDashIndex)...]
+        // Trailing segment must be all digits to be the parameter index.
+        // If not (e.g. session id itself contained dashes but no numeric
+        // suffix — defensive only), bail out and return the whole id.
+        guard !suffix.isEmpty, suffix.allSatisfy({ $0.isNumber }) else {
+            return queueId
+        }
+        return String(queueId[..<lastDashIndex])
     }
 
     /// Watches `teachModeManager.lastRecordingDirectoryUrl` and fires a

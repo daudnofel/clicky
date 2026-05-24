@@ -129,6 +129,16 @@ struct CompanionPanelView: View {
                     // ensureAgentRunningAndConnected is idempotent, so
                     // calling it on every Run click is safe.
                     companionManager.ensureAgentRunningAndConnected()
+                },
+                onSessionStarting: { sessionId, workflowOutputFormat in
+                    // Stamp the (session_id, output_format) pair so the
+                    // inbound queue_item_* events get the right card
+                    // variant (ApplicationCard vs ResultsListCard) on
+                    // their SQLite rows. § A.4 amendment 2026-05-23.
+                    companionManager.registerStartedSessionOutputFormat(
+                        sessionId: sessionId,
+                        workflowOutputFormat: workflowOutputFormat
+                    )
                 }
             )
         }

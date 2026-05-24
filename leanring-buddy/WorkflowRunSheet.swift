@@ -32,6 +32,15 @@ struct WorkflowRunSheet: View {
     /// CompanionPanelView wires this to companionManager.ensureAgentRunningAndConnected.
     var onWillRun: () -> Void = {}
 
+    /// Optional notifier so the parent can stamp the
+    /// `(session_id, output_format)` pair into CompanionManager's session
+    /// registry BEFORE start_job goes out over the wire. Called with the
+    /// freshly-minted session id and the profile's `output_format` slot,
+    /// in that order. CompanionPanelView wires this to
+    /// `companionManager.registerStartedSessionOutputFormat`. § A.4
+    /// amendment 2026-05-23.
+    var onSessionStarting: (_ sessionId: String, _ workflowOutputFormat: String) -> Void = { _, _ in }
+
     @Environment(\.dismiss) private var dismissSheet
 
     /// One-text-per-parameter buffer. Pre-filled in `onAppear` from each
@@ -237,9 +246,17 @@ struct WorkflowRunSheet: View {
         // sheet only collects one set; multi-set runs come later.
         let parametersListPayload: [[String: String]] = [collectedParameters]
 
+        // Mint the session id BEFORE sending so we can register the
+        // (session_id, output_format) pair on the parent side. The agent
+        // turns this into per-queue-item ids of the form
+        // `${session_id}-${index}`, which CompanionManager reverses to
+        // recover the output_format when each `queue_item_started` lands.
+        let freshSessionId = "ui-run-\(UUID().uuidString)"
+        onSessionStarting(freshSessionId, workflowProfile.outputFormat)
+
         let startJobMessage: [String: Any] = [
             "type": "start_job",
-            "session_id": "ui-run-\(UUID().uuidString)",
+            "session_id": freshSessionId,
             "workflow_profile": workflowProfileDictionary,
             "reference_data": referenceDataDictionary,
             "parameters_list": parametersListPayload

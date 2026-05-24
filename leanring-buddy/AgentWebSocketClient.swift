@@ -45,6 +45,11 @@ struct QueueItemViewModel: Identifiable, Equatable {
     var draftedText: String?
     var filledFields: [String: String]
     var submitSelector: String?
+    /// Populated on `queue_item_ready` for workflows whose
+    /// `output_format == "results-list"`. § A.4 amendment 2026-05-23.
+    /// `nil` for review-queue-card workflows so the existing
+    /// ApplicationCard path is undisturbed.
+    var results: [ResultsListItem]?
     var lastIntent: String?
     var lastErrorMessage: String?
     var resultMessage: String?
@@ -59,11 +64,16 @@ struct QueueItemViewModel: Identifiable, Equatable {
 enum AgentQueueEvent {
     case started(queueId: String, jobUrl: String?, companyGuess: String?)
     case progress(queueId: String, step: Int?, intent: String?)
+    /// `results` is the § A.4 amendment 2026-05-23 peer to `submitSelector`.
+    /// Populated for results-list workflows; nil for review-queue-card
+    /// workflows. Both fields can coexist in principle, though in practice
+    /// a workflow is one mode or the other.
     case ready(
         queueId: String,
         draftedText: String?,
         filledFields: [String: String],
-        submitSelector: String?
+        submitSelector: String?,
+        results: [ResultsListItem]?
     )
     case submitted(queueId: String, didSucceed: Bool, resultMessage: String?)
     case errored(queueId: String, errorMessage: String?)
@@ -111,6 +121,9 @@ final class AgentWebSocketClient: ObservableObject {
 
         currentWebSocketTask?.cancel(with: .goingAway, reason: nil)
         currentWebSocketTask = nil
+        // A user-initiated connect cancels any pending caller-disconnect state
+        // so the auto-reconnect loop is allowed to fire on receive failures.
+        isExplicitlyDisconnected = false
 
         guard let url = URL(string: "ws://127.0.0.1:\(port)/") else {
             lastConnectionErrorMessage = "Invalid websocket URL for port \(port)"
@@ -127,9 +140,47 @@ final class AgentWebSocketClient: ObservableObject {
     }
 
     func disconnect() {
+        isExplicitlyDisconnected = true
+        pendingReconnectTask?.cancel()
+        pendingReconnectTask = nil
         currentWebSocketTask?.cancel(with: .normalClosure, reason: nil)
         currentWebSocketTask = nil
         connected = false
+    }
+
+    /// True only when `disconnect()` was called by application code. The
+    /// auto-reconnect path checks this so we don't reconnect after the user
+    /// has explicitly turned the POV window off.
+    private var isExplicitlyDisconnected: Bool = false
+
+    /// Pending sleep-then-reconnect work. Cancelled on disconnect or replaced
+    /// when a fresh reconnect is scheduled (we never want two concurrent
+    /// reconnect attempts racing the same port).
+    private var pendingReconnectTask: Task<Void, Never>?
+
+    /// Schedules a reconnect attempt after a short delay. Called from the
+    /// receive loop's `.failure` branch so the first connect (which usually
+    /// races the agent subprocess's port bind) recovers automatically once
+    /// the node process is actually listening.
+    private func scheduleReconnectIfNeeded() {
+        guard !isExplicitlyDisconnected, let portToRetry = currentWebSocketPort else {
+            return
+        }
+        pendingReconnectTask?.cancel()
+        // Capture the port at schedule time so a later connect(port:) with a
+        // different port doesn't accidentally retry against the stale one.
+        let pinnedPort = portToRetry
+        pendingReconnectTask = Task { @MainActor [weak self] in
+            // 500ms is enough for a fresh `node dist/index.js` to bind the
+            // port; it's also short enough that the user's eye doesn't catch
+            // the gap between "agent idle" and the first frame arriving.
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let self,
+                  !Task.isCancelled,
+                  !self.isExplicitlyDisconnected else { return }
+            print("🔁 AgentWebSocketClient reconnecting to port \(pinnedPort) ...")
+            self.connect(port: pinnedPort)
+        }
     }
 
     // MARK: - Sending
@@ -184,6 +235,10 @@ final class AgentWebSocketClient: ObservableObject {
                     print("⚠️ AgentWebSocketClient receive error: \(receiveError)")
                     self.connected = false
                     self.lastConnectionErrorMessage = receiveError.localizedDescription
+                    // The first connect typically races the node subprocess
+                    // binding its port — schedule a delayed retry so frames
+                    // start flowing once the agent is actually listening.
+                    self.scheduleReconnectIfNeeded()
                 }
             }
         }
@@ -249,6 +304,7 @@ final class AgentWebSocketClient: ObservableObject {
                 draftedText: nil,
                 filledFields: [:],
                 submitSelector: nil,
+                results: nil,
                 lastIntent: nil,
                 lastErrorMessage: nil,
                 resultMessage: nil,
@@ -306,6 +362,27 @@ final class AgentWebSocketClient: ObservableObject {
         // submit_selector is a first-class field per § A.4 amendment.
         let submitSelector = json["submit_selector"] as? String
 
+        // `results` peer field — § A.4 amendment 2026-05-23. Decoded
+        // here from the raw JSON via JSONSerialization → JSONDecoder
+        // round-trip so the ResultsListItem Codable struct stays the
+        // single source of truth for the wire shape (no parallel
+        // hand-decode path that could drift out of sync).
+        let decodedResults: [ResultsListItem]? = {
+            guard let rawResultsArray = json["results"] as? [[String: Any]] else {
+                return nil
+            }
+            // Re-serialize the array fragment to Data so JSONDecoder can
+            // own the actual key/type validation. Worker has already
+            // sanitized the payload but we still trust JSONDecoder over
+            // hand-rolling per-field guards in Swift.
+            guard let rawResultsData = try? JSONSerialization.data(withJSONObject: rawResultsArray),
+                  let decodedArray = try? JSONDecoder().decode([ResultsListItem].self, from: rawResultsData) else {
+                print("⚠️ AgentWebSocketClient: queue_item_ready.results failed to decode; ignoring")
+                return nil
+            }
+            return decodedArray
+        }()
+
         upsertQueueItem(id: queueId) { existingItem in
             var mutated = existingItem ?? QueueItemViewModel(
                 id: queueId,
@@ -315,6 +392,7 @@ final class AgentWebSocketClient: ObservableObject {
                 draftedText: nil,
                 filledFields: [:],
                 submitSelector: nil,
+                results: nil,
                 lastIntent: nil,
                 lastErrorMessage: nil,
                 resultMessage: nil,
@@ -326,6 +404,12 @@ final class AgentWebSocketClient: ObservableObject {
                 mutated.filledFields = coercedFilledFields
             }
             mutated.submitSelector = submitSelector ?? mutated.submitSelector
+            // Only overwrite results when the agent actually emitted them.
+            // A late-arriving second .ready event without a results field
+            // shouldn't blow away an earlier list.
+            if let decodedResults {
+                mutated.results = decodedResults
+            }
             mutated.updatedAt = Date()
             return mutated
         }
@@ -333,7 +417,8 @@ final class AgentWebSocketClient: ObservableObject {
             queueId: queueId,
             draftedText: draftedText,
             filledFields: coercedFilledFields,
-            submitSelector: submitSelector
+            submitSelector: submitSelector,
+            results: decodedResults
         ))
     }
 
