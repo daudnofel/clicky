@@ -156,7 +156,7 @@ export async function handleWorkflowReplayStep(
     return new Response(
       JSON.stringify(
         safeHaltAction(
-          `Anthropic API error ${output.upstreamError.status}; halting to be safe`,
+          `Upstream model API error ${output.upstreamError.status}; halting to be safe`,
         ),
       ),
       { status: 200, headers: { "content-type": "application/json" } },
@@ -201,6 +201,15 @@ export async function handleWorkflowReplayStep(
  * 2026-05-22 § A.3 amendment — the Review Queue UI reads this field by
  * name and we don't want it accidentally nested.
  *
+ * On halt we also sanitize an optional `results` field per the
+ * 2026-05-23 § A.3 amendment: it's the peer payload the model emits
+ * when the workflow's `output_format === "results-list"`. We drop
+ * malformed shapes here so the Swift side can decode without
+ * defensive code: results must be an array, each entry must have a
+ * string `title`, `fields` must be an object (else coerced to `{}`),
+ * `url` must be a string (else stripped), and we cap the array at 15
+ * items to keep cards readable and the wire payload bounded.
+ *
  * Returns the normalized envelope on success, or null on failure.
  */
 function validateAgentActionEnvelope(
@@ -222,5 +231,77 @@ function validateAgentActionEnvelope(
   if (actionObj.type === "halt" && !("submit_selector" in actionObj)) {
     actionObj.submit_selector = null;
   }
+  // Sanitize `results` on halt (§ A.3 amendment 2026-05-23). If the field
+  // is present but malformed we strip it rather than rejecting the whole
+  // action — the model may have produced a perfectly-good halt with a
+  // half-formed list, and a partial list is more useful than a dropped run.
+  if (actionObj.type === "halt" && "results" in actionObj) {
+    const sanitizedResults = sanitizeResultsList(actionObj.results);
+    if (sanitizedResults === null) {
+      delete actionObj.results;
+    } else {
+      actionObj.results = sanitizedResults;
+    }
+  }
   return env;
+}
+
+/** Cap on the number of results allowed in a single halt. Beyond this the
+ *  cards become unreadable and the wire payload grows linearly with junk. */
+const MAX_RESULTS_LIST_ITEMS = 15;
+
+/**
+ * Defensively coerce a candidate `results` payload into the on-the-wire
+ * `ResultsListItem[]` shape, or return null if the candidate isn't an
+ * array at all (in which case the caller strips the field entirely).
+ *
+ * Per-item rules (each runs independently so a single bad item doesn't
+ * tank the whole list):
+ *   - `title` must be a non-empty string. Missing/empty -> drop the item.
+ *   - `fields` must be a plain object whose values are strings; non-string
+ *     values are stringified, non-object payloads are replaced with `{}`.
+ *   - `url` must be a string. Anything else is stripped.
+ */
+function sanitizeResultsList(
+  candidate: unknown,
+): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(candidate)) return null;
+  const sanitized: Array<Record<string, unknown>> = [];
+  for (const rawItem of candidate) {
+    if (sanitized.length >= MAX_RESULTS_LIST_ITEMS) break;
+    if (typeof rawItem !== "object" || rawItem === null) continue;
+    const itemObj = rawItem as Record<string, unknown>;
+    const titleCandidate = itemObj.title;
+    if (typeof titleCandidate !== "string" || titleCandidate.length === 0) {
+      continue;
+    }
+    // fields: must be an object whose values are coerced to string.
+    let coercedFields: Record<string, string> = {};
+    const fieldsCandidate = itemObj.fields;
+    if (
+      typeof fieldsCandidate === "object" &&
+      fieldsCandidate !== null &&
+      !Array.isArray(fieldsCandidate)
+    ) {
+      const fieldsObj = fieldsCandidate as Record<string, unknown>;
+      for (const [fieldKey, fieldValue] of Object.entries(fieldsObj)) {
+        if (typeof fieldValue === "string") {
+          coercedFields[fieldKey] = fieldValue;
+        } else if (fieldValue != null) {
+          coercedFields[fieldKey] = String(fieldValue);
+        }
+      }
+    }
+    // url: optional string; strip if wrong type.
+    const urlCandidate = itemObj.url;
+    const builtItem: Record<string, unknown> = {
+      title: titleCandidate,
+      fields: coercedFields,
+    };
+    if (typeof urlCandidate === "string" && urlCandidate.length > 0) {
+      builtItem.url = urlCandidate;
+    }
+    sanitized.push(builtItem);
+  }
+  return sanitized;
 }

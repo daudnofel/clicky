@@ -85,7 +85,33 @@ CRITICAL RULES
    `style_profile: {"applicable": false}` and omit the rest.
 7. `stop_condition` is almost always `"submit-ready"` — the workflow
    halts before any final submit so the user can review.
-8. `output_format` is almost always `"review-queue-card"` for V1.
+8. `output_format` picks between two card shapes downstream:
+   - Default to `"review-queue-card"` for workflows that produce a SINGLE
+     drafted action — a job application, an email reply, a DM reply — where
+     the user wrote some freeform prose and is meant to review/edit/approve
+     ONE thing at the end.
+   - Pick `"results-list"` instead when the demonstration involves the
+     user searching, filtering, browsing, or comparing many items to find
+     a subset — and the user did NOT write freeform prose at the end. The
+     final artifact in that case is a *list of items the user found*
+     (jobs they shortlisted, flights matching a date+price filter,
+     apartments under a budget, products with the right specs, papers
+     citing a particular method, etc.). Downstream the Swift app renders
+     these as a list card with one row per item.
+
+   Example — flight search workflow: the user opens Google Flights, sets
+   origin/destination/dates, filters to nonstop under $500, and visually
+   scans the results list. There's no freeform prose. Set
+   `output_format: "results-list"`. The decision_rules might include
+   "prefer nonstop", and the parameters might include `origin`,
+   `destination`, `depart_date`, `return_date`.
+
+   Example — job search shortlisting: the user browses a job board,
+   filters by remote+seniority, and clicks through a handful of postings
+   without applying. `output_format: "results-list"`. Contrast: if the
+   user then actually FILLS OUT an application form on one posting with
+   freeform answers, that's a different workflow and would itself be
+   `"review-queue-card"`.
 
 OUTPUT FORMAT
 Return the WorkflowProfile JSON object as a single top-level value. No

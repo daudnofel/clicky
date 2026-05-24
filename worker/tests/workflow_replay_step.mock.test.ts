@@ -260,6 +260,198 @@ describe("handleWorkflowReplayStep (mocked Claude)", () => {
     expect(imageBlockCount).toBe(1);
   });
 
+  // ---------------------------------------------------------------------
+  // § A.3 amendment 2026-05-23 — results-list halt payload validation.
+  // The model emits a peer `results` array on halt when the workflow's
+  // output_format is "results-list". The handler must pass clean payloads
+  // through unchanged and sanitize malformed entries without dropping the
+  // whole halt.
+  // ---------------------------------------------------------------------
+
+  it("passes a clean `results` array through unchanged on halt", async () => {
+    __setFetchOverrideForTests(async () =>
+      fakeClaudeSuccess(
+        JSON.stringify({
+          action: {
+            type: "halt",
+            confidence: 0.9,
+            reasoning: "scanned the results list",
+            results: [
+              {
+                title: "Senior Data Scientist — Acme",
+                fields: { salary: "$220K", location: "Remote", company: "Acme" },
+                url: "https://remoteok.com/job/12345",
+              },
+              {
+                title: "ML Engineer — Globex",
+                fields: { salary: "$200K", location: "NYC" },
+              },
+            ],
+          },
+          next_state_hint: "submit_ready",
+        }),
+      ),
+    );
+    const req = buildReplayRequest(defaultRequestBody);
+    const res = await handleWorkflowReplayStep(req, fakeEnv);
+    const body = (await res.json()) as {
+      action: {
+        type: string;
+        results?: Array<{ title: string; fields: Record<string, string>; url?: string }>;
+      };
+    };
+    expect(body.action.type).toBe("halt");
+    expect(body.action.results).toBeDefined();
+    expect(body.action.results).toHaveLength(2);
+    expect(body.action.results?.[0].title).toBe("Senior Data Scientist — Acme");
+    expect(body.action.results?.[0].fields.salary).toBe("$220K");
+    expect(body.action.results?.[0].url).toBe("https://remoteok.com/job/12345");
+    // Second item has no url — the field should be absent (not null) so
+    // the Swift Codable decode sees an "no url" item correctly.
+    expect(body.action.results?.[1].url).toBeUndefined();
+  });
+
+  it("drops items missing a title from the `results` array but keeps the rest", async () => {
+    __setFetchOverrideForTests(async () =>
+      fakeClaudeSuccess(
+        JSON.stringify({
+          action: {
+            type: "halt",
+            confidence: 0.7,
+            reasoning: "two of three rows had titles",
+            results: [
+              { title: "Good item", fields: { price: "$10" } },
+              { fields: { price: "$20" } }, // missing title → dropped
+              { title: "", fields: {} }, // empty title → dropped
+              { title: "Another good item", fields: {} },
+            ],
+          },
+          next_state_hint: "submit_ready",
+        }),
+      ),
+    );
+    const req = buildReplayRequest(defaultRequestBody);
+    const res = await handleWorkflowReplayStep(req, fakeEnv);
+    const body = (await res.json()) as {
+      action: { results?: Array<{ title: string }> };
+    };
+    expect(body.action.results).toHaveLength(2);
+    expect(body.action.results?.[0].title).toBe("Good item");
+    expect(body.action.results?.[1].title).toBe("Another good item");
+  });
+
+  it("coerces non-string `fields` values to strings and replaces non-object fields with {}", async () => {
+    __setFetchOverrideForTests(async () =>
+      fakeClaudeSuccess(
+        JSON.stringify({
+          action: {
+            type: "halt",
+            confidence: 0.5,
+            reasoning: "mixed types in fields",
+            results: [
+              {
+                title: "Numeric salary",
+                fields: { salary: 220000, remote: true, junk: null },
+              },
+              {
+                title: "Not an object",
+                fields: "salary=200K",
+              },
+            ],
+          },
+          next_state_hint: "submit_ready",
+        }),
+      ),
+    );
+    const req = buildReplayRequest(defaultRequestBody);
+    const res = await handleWorkflowReplayStep(req, fakeEnv);
+    const body = (await res.json()) as {
+      action: { results?: Array<{ title: string; fields: Record<string, string> }> };
+    };
+    expect(body.action.results).toHaveLength(2);
+    expect(body.action.results?.[0].fields.salary).toBe("220000");
+    expect(body.action.results?.[0].fields.remote).toBe("true");
+    // null values are dropped from `fields`, not stringified.
+    expect(body.action.results?.[0].fields.junk).toBeUndefined();
+    expect(body.action.results?.[1].fields).toEqual({});
+  });
+
+  it("strips a non-string `url` from a results item but keeps the item", async () => {
+    __setFetchOverrideForTests(async () =>
+      fakeClaudeSuccess(
+        JSON.stringify({
+          action: {
+            type: "halt",
+            confidence: 0.5,
+            reasoning: "bad url type",
+            results: [
+              { title: "Has bad url", fields: {}, url: 12345 },
+            ],
+          },
+          next_state_hint: "submit_ready",
+        }),
+      ),
+    );
+    const req = buildReplayRequest(defaultRequestBody);
+    const res = await handleWorkflowReplayStep(req, fakeEnv);
+    const body = (await res.json()) as {
+      action: { results?: Array<{ title: string; url?: string }> };
+    };
+    expect(body.action.results).toHaveLength(1);
+    expect(body.action.results?.[0].title).toBe("Has bad url");
+    expect(body.action.results?.[0].url).toBeUndefined();
+  });
+
+  it("caps the `results` array at 15 items", async () => {
+    // Build a 25-item results list to test the cap.
+    const oversizedResultsArray = Array.from({ length: 25 }, (_, idx) => ({
+      title: `Item ${idx}`,
+      fields: { idx: String(idx) },
+    }));
+    __setFetchOverrideForTests(async () =>
+      fakeClaudeSuccess(
+        JSON.stringify({
+          action: {
+            type: "halt",
+            confidence: 0.8,
+            reasoning: "oversize list",
+            results: oversizedResultsArray,
+          },
+          next_state_hint: "submit_ready",
+        }),
+      ),
+    );
+    const req = buildReplayRequest(defaultRequestBody);
+    const res = await handleWorkflowReplayStep(req, fakeEnv);
+    const body = (await res.json()) as {
+      action: { results?: unknown[] };
+    };
+    expect(body.action.results).toHaveLength(15);
+  });
+
+  it("strips a non-array `results` field entirely (rather than dropping the halt)", async () => {
+    __setFetchOverrideForTests(async () =>
+      fakeClaudeSuccess(
+        JSON.stringify({
+          action: {
+            type: "halt",
+            confidence: 0.5,
+            reasoning: "model emitted results as an object instead of an array",
+            results: { not: "an array" },
+          },
+          next_state_hint: "submit_ready",
+        }),
+      ),
+    );
+    const req = buildReplayRequest(defaultRequestBody);
+    const res = await handleWorkflowReplayStep(req, fakeEnv);
+    const body = (await res.json()) as {
+      action: { type: string; results?: unknown };
+    };
+    expect(body.action.type).toBe("halt");
+    expect(body.action.results).toBeUndefined();
+  });
+
   it("omits the image block when screenshot_b64 is empty", async () => {
     let imageBlockCount = 0;
     __setFetchOverrideForTests(async (_url, init) => {
