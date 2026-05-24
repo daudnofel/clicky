@@ -62,17 +62,35 @@ struct ReviewQueueView: View {
             // anything for off-screen rows.
             LazyVStack(spacing: 12) {
                 ForEach(queueStoreObservable.readyItems) { queueItem in
-                    ApplicationCard(
-                        queueItem: queueItem,
-                        onApprove: handleApproveAndSubmit(_:),
-                        onEditInBrowser: handleEditInBrowserPlaceholder(_:),
-                        onDiscard: handleDiscard(_:),
-                        onDraftedTextCommit: handleDraftedTextDebouncedCommit(item:newDraftedText:)
-                    )
-                    .id(queueItem.id)
+                    cardViewForQueueItem(queueItem)
+                        .id(queueItem.id)
                 }
             }
             .padding(16)
+        }
+    }
+
+    /// Picks the card variant based on the queue row's `outputFormat`
+    /// (echoed from the workflow profile's § A.1 slot at start time).
+    /// "results-list" → `ResultsListCard`; anything else (including the
+    /// V1 default "review-queue-card", any unknown value, and nil for
+    /// rows persisted before the § A.4 amendment 2026-05-23 landed) falls
+    /// back to `ApplicationCard` for backwards compatibility.
+    @ViewBuilder
+    private func cardViewForQueueItem(_ queueItem: QueueItem) -> some View {
+        if queueItem.outputFormat == "results-list" {
+            ResultsListCard(
+                queueItem: queueItem,
+                onDiscard: handleDiscard(_:)
+            )
+        } else {
+            ApplicationCard(
+                queueItem: queueItem,
+                onApprove: handleApproveAndSubmit(_:),
+                onEditInBrowser: handleEditInBrowserPlaceholder(_:),
+                onDiscard: handleDiscard(_:),
+                onDraftedTextCommit: handleDraftedTextDebouncedCommit(item:newDraftedText:)
+            )
         }
     }
 
