@@ -30,7 +30,12 @@ struct QueueStoreTests {
         company: String? = "Acme",
         role: String? = "Software Engineer",
         draftedText: String? = "hello from clicky",
-        submitSelector: String? = "button[type=submit]"
+        submitSelector: String? = "button[type=submit]",
+        // 2026-05-23 § A.4 amendment: results-list columns. Default to
+        // nil + "review-queue-card" so the existing cases keep exercising
+        // the job-application card path unchanged.
+        resultsJson: String? = nil,
+        outputFormat: String? = "review-queue-card"
     ) -> QueueItem {
         let now = Date()
         return QueueItem(
@@ -43,6 +48,8 @@ struct QueueStoreTests {
             draftedText: draftedText,
             filledFieldsJson: #"{"name":"Daud"}"#,
             submitSelector: submitSelector,
+            resultsJson: resultsJson,
+            outputFormat: outputFormat,
             status: status,
             agentSessionAlive: true,
             createdAt: now,
@@ -71,6 +78,30 @@ struct QueueStoreTests {
         #expect(firstFetched.submitSelector == "button[type=submit]")
         #expect(firstFetched.status == .ready)
         #expect(firstFetched.agentSessionAlive == true)
+    }
+
+    // MARK: - Results-list columns (§ A.4 amendment 2026-05-23)
+
+    @Test func resultsListColumnsRoundTrip() async throws {
+        let store = try QueueStore(inMemoryDatabase: true)
+        let resultsListPayloadJson = """
+        [{"title":"Senior Data Scientist — Acme","fields":{"salary":"$220K","location":"Remote"},"url":"https://example.com/1"}]
+        """
+        let fixture = makeFixtureQueueItem(
+            id: "q-results",
+            resultsJson: resultsListPayloadJson,
+            outputFormat: "results-list"
+        )
+
+        try store.upsert(fixture)
+
+        let fetched = try #require(try store.fetchAll(status: nil).first)
+        #expect(fetched.outputFormat == "results-list")
+        #expect(fetched.resultsJson == resultsListPayloadJson)
+        // Sanity: the existing review-queue-card columns are still
+        // present unchanged so this card variant doesn't accidentally
+        // clobber the older path.
+        #expect(fetched.submitSelector == "button[type=submit]")
     }
 
     // MARK: - Status Filter

@@ -63,6 +63,24 @@ struct QueueItem: Codable, FetchableRecord, PersistableRecord, Identifiable, Equ
     /// the row so the Approve & Submit path can re-issue the click
     /// even if the agent process has rotated between sessions.
     var submitSelector: String?
+    /// Serialized JSON payload of the `results: [ResultsListItem]` array
+    /// emitted on halt for workflows whose `output_format == "results-list"`.
+    /// Stored as TEXT (rather than as a separate `results` table) because:
+    ///   - Each row is small (≤15 items × ≈100 bytes ≈ 1.5KB) so we don't
+    ///     need indexed access to individual items.
+    ///   - The UI always reads the whole list together (ResultsListCard
+    ///     renders every row at once), so a relational split would mean
+    ///     an extra join on every render with no payoff.
+    /// Added in the 2026-05-23 § A.4 amendment via the second GRDB
+    /// migration `v2_add_results_list_columns`.
+    var resultsJson: String?
+    /// Echo of the workflow profile's `output_format` slot (§ A.1).
+    /// Stored on the queue row so the Review Queue can pick the right
+    /// card variant (ApplicationCard vs ResultsListCard) WITHOUT having
+    /// to look up the workflow profile separately — many queue items
+    /// may outlive their workflow file on disk. Same migration as
+    /// `resultsJson`.
+    var outputFormat: String?
     var status: Status
     var agentSessionAlive: Bool
     let createdAt: Date
@@ -236,6 +254,19 @@ final class QueueStore {
                 columns: ["status"],
                 ifNotExists: true
             )
+        }
+        // 2026-05-23 § A.4 amendment: results-list card variant. We add
+        // two nullable columns so existing rows keep working unchanged:
+        //   - resultsJson:   serialized [ResultsListItem] from halt events
+        //   - outputFormat:  echo of the workflow profile's output_format
+        //                    so ReviewQueueView can pick the right card.
+        // Registered as a SEPARATE named migration so GRDB skips it on
+        // already-migrated installs and only runs it once.
+        schemaMigrator.registerMigration("v2_add_results_list_columns") { databaseConnection in
+            try databaseConnection.alter(table: QueueItem.databaseTableName) { tableAlteration in
+                tableAlteration.add(column: "resultsJson", .text)
+                tableAlteration.add(column: "outputFormat", .text)
+            }
         }
         try schemaMigrator.migrate(databaseQueue)
     }
