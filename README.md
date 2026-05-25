@@ -6,7 +6,7 @@ Original Clicky teaches you. This version learns from you.
 
 Toggle "Teach me a workflow," do one job application (or any workflow) by hand once, and the AI captures a structured profile: the procedure, your voice on freeform answers, your decision rules, your reference data. Then drop a list of URLs and it replays the workflow on each, drafts each form in your voice, and queues every one for your 1-click approval. Never auto-submits.
 
-**Demo (75s):** _(link goes here once recorded)_
+**Demo (2 min):** https://x.com/donnywaffle/status/2058728248746365023
 
 ---
 
