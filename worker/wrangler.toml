@@ -5,10 +5,13 @@ compatibility_date = "2024-01-01"
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
 
-# Azure OpenAI backend (dev). Unset WORKFLOW_MODEL_BACKEND (or set it to
-# "anthropic") before shipping the demo so the fork ships on the Anthropic
-# default the README + tweet thread claim.
-WORKFLOW_MODEL_BACKEND   = "azure_openai"
-AZURE_OPENAI_ENDPOINT    = "https://csqr.openai.azure.com"
-AZURE_OPENAI_DEPLOYMENT  = "gpt-4.1"
-AZURE_OPENAI_API_VERSION = "2025-01-01-preview"
+# Apprentice-mode backend dispatch. The fork ships with Anthropic Claude
+# as the default model client — this matches the README and demo. To dev
+# for free against an Azure OpenAI deployment instead, uncomment the four
+# lines below (filling in your own resource details) and add your key as
+# a wrangler secret: `npx wrangler secret put AZURE_OPENAI_API_KEY`.
+# See `AZURE_OPENAI_BACKEND.md` for the full dev setup.
+# WORKFLOW_MODEL_BACKEND   = "azure_openai"
+# AZURE_OPENAI_ENDPOINT    = "https://YOUR-RESOURCE.openai.azure.com"
+# AZURE_OPENAI_DEPLOYMENT  = "gpt-4.1"
+# AZURE_OPENAI_API_VERSION = "2025-01-01-preview"
