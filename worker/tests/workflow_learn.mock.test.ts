@@ -178,7 +178,7 @@ describe("handleWorkflowLearn (mocked Claude)", () => {
     const res = await handleWorkflowLearn(req, fakeEnv);
     expect(res.status).toBe(429);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/Anthropic API error/);
+    expect(body.error).toMatch(/Upstream model API error/);
   });
 
   it("returns 400 when required form fields are missing", async () => {

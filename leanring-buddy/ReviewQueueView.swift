@@ -78,7 +78,22 @@ struct ReviewQueueView: View {
     /// back to `ApplicationCard` for backwards compatibility.
     @ViewBuilder
     private func cardViewForQueueItem(_ queueItem: QueueItem) -> some View {
-        if queueItem.outputFormat == "results-list" {
+        // Defensive dispatch: prefer the workflow profile's outputFormat
+        // when it was stamped on the row at start-job time, BUT also fall
+        // back to the row's actual data shape. If results_json is present
+        // and non-empty, the agent emitted a results-list halt regardless
+        // of what outputFormat says — render ResultsListCard so the user
+        // sees the extracted items instead of an empty job-application
+        // card. This handles two real cases: (1) CLI-initiated runs that
+        // bypass Swift's session-id → output_format registry, and (2)
+        // rows persisted before the § A.4 amendment 2026-05-23 was wired.
+        let resultsJsonHasContent =
+            queueItem.resultsJson?.isEmpty == false &&
+            queueItem.resultsJson != "[]"
+        let renderAsResultsList =
+            queueItem.outputFormat == "results-list" || resultsJsonHasContent
+
+        if renderAsResultsList {
             ResultsListCard(
                 queueItem: queueItem,
                 onDiscard: handleDiscard(_:)

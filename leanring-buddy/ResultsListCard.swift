@@ -273,14 +273,85 @@ struct ResultsListCard: View {
     /// surface any error UI — opening a URL is best-effort, and a bad
     /// URL just no-ops with a log line.
     private func handleOpenUrlButtonTap(urlString: String) {
-        guard let parsedUrl = URL(string: urlString) else {
-            print("⚠️ ResultsListCard: Open tapped on unparseable URL: \(urlString)")
+        // The model sometimes extracts relative hrefs like "/job/foo/123"
+        // instead of absolute URLs. NSWorkspace can't open those — it'll
+        // return Launch Services error -50 (paramErr) and show a Finder
+        // "application can't be opened" dialog. Detect that case and
+        // prepend the host from the parameters_json job_url we stored
+        // when the agent started, so the link points back at the right
+        // origin (e.g. https://builtin.com).
+        let resolvedUrlString = absoluteUrlByResolvingAgainstQueueParameters(
+            rawUrlString: urlString,
+            queueParametersJson: queueItem.parametersJson
+        )
+        guard let parsedUrl = URL(string: resolvedUrlString),
+              parsedUrl.scheme == "http" || parsedUrl.scheme == "https" else {
+            print("⚠️ ResultsListCard: Open tapped on unparseable / relative URL: \(urlString) (resolved: \(resolvedUrlString))")
             return
         }
-        let didOpen = NSWorkspace.shared.open(parsedUrl)
-        if !didOpen {
-            print("⚠️ ResultsListCard: NSWorkspace refused to open \(urlString)")
+        openUrlPreferringChrome(parsedUrl)
+    }
+
+    /// Open `urlToOpen` in Google Chrome specifically when it's installed,
+    /// falling back to the macOS default browser otherwise. The user often
+    /// has Brave or another browser set as the system default but is
+    /// actively recording / demoing in Chrome — popping a different
+    /// browser mid-demo is jarring. Chrome is the most common dev choice
+    /// so we hard-prefer it; Safari / Brave / Arc users get the same
+    /// behavior they had before (system default) since Chrome won't exist
+    /// at the path.
+    private func openUrlPreferringChrome(_ urlToOpen: URL) {
+        let chromeAppUrl = URL(fileURLWithPath: "/Applications/Google Chrome.app")
+        if FileManager.default.fileExists(atPath: chromeAppUrl.path) {
+            let openConfiguration = NSWorkspace.OpenConfiguration()
+            openConfiguration.activates = true
+            NSWorkspace.shared.open(
+                [urlToOpen],
+                withApplicationAt: chromeAppUrl,
+                configuration: openConfiguration
+            ) { _, openError in
+                if let openError {
+                    print("⚠️ ResultsListCard: Chrome refused to open \(urlToOpen.absoluteString): \(openError)")
+                }
+            }
+            return
         }
+        // No Chrome installed — fall back to whatever the OS-default
+        // browser is. This is the path most non-Chrome users hit.
+        let didOpen = NSWorkspace.shared.open(urlToOpen)
+        if !didOpen {
+            print("⚠️ ResultsListCard: NSWorkspace refused to open \(urlToOpen.absoluteString)")
+        }
+    }
+
+    /// If `rawUrlString` already has an absolute scheme (http/https), return
+    /// it untouched. Otherwise look at the queue item's stored parameters
+    /// for a `job_url` (or any URL-shaped value) and reuse its origin so
+    /// `/job/foo/123` becomes `https://builtin.com/job/foo/123`.
+    private func absoluteUrlByResolvingAgainstQueueParameters(
+        rawUrlString: String,
+        queueParametersJson: String
+    ) -> String {
+        if rawUrlString.hasPrefix("http://") || rawUrlString.hasPrefix("https://") {
+            return rawUrlString
+        }
+        guard let parametersData = queueParametersJson.data(using: .utf8),
+              let parametersObject = try? JSONSerialization.jsonObject(with: parametersData) as? [String: Any] else {
+            return rawUrlString
+        }
+        // Find any URL-shaped value in the parameters dict — usually job_url.
+        for parameterValue in parametersObject.values {
+            guard let candidateString = parameterValue as? String,
+                  let candidateUrl = URL(string: candidateString),
+                  let candidateScheme = candidateUrl.scheme,
+                  let candidateHost = candidateUrl.host else { continue }
+            let originString = "\(candidateScheme)://\(candidateHost)"
+            if rawUrlString.hasPrefix("/") {
+                return originString + rawUrlString
+            }
+            return originString + "/" + rawUrlString
+        }
+        return rawUrlString
     }
 
     /// Save the rendered list as a Markdown file on the Desktop. Layout:

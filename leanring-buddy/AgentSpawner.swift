@@ -71,6 +71,23 @@ final class AgentSpawner {
             "--ws-port", String(webSocketPort),
             "--worker-url", workerBaseUrl
         ]
+        // Finder-launched .apps inherit a sparse PATH (/usr/bin:/bin:/usr/sbin:/sbin)
+        // that doesn't include /usr/local/bin (Intel homebrew + nvm) or
+        // /opt/homebrew/bin (Apple Silicon homebrew). Inject the common Node
+        // install paths so `/usr/bin/env node` actually resolves.
+        var subprocessEnvironment = ProcessInfo.processInfo.environment
+        let candidateNodeBinaryDirectories = [
+            "/usr/local/bin",
+            "/opt/homebrew/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        let existingPathValue = subprocessEnvironment["PATH"] ?? ""
+        let augmentedPathValue = (candidateNodeBinaryDirectories + [existingPathValue])
+            .filter { !$0.isEmpty }
+            .joined(separator: ":")
+        subprocessEnvironment["PATH"] = augmentedPathValue
+        process.environment = subprocessEnvironment
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -131,16 +148,21 @@ final class AgentSpawner {
             }
         }
 
-        // Dev-mode fallback: walk up from the Xcode-built .app to the workspace
-        // and use the source `clicky-agent` directory.
-        if let bundleUrl = Bundle.main.bundleURL.deletingLastPathComponent() as URL? {
-            let candidate = bundleUrl
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("clicky-agent")
+        // Dev-mode fallback: walk up from the Xcode-built .app looking for a
+        // sibling `clicky-agent/dist/index.js`. Two common layouts to search:
+        //   - DerivedData default: .../DerivedData/<id>/Build/Products/Debug/Clicky.app
+        //   - Custom `-derivedDataPath ./build`: .../fork/build/Build/Products/Debug/Clicky.app
+        // Both bottom out at the fork root within 6 levels.
+        var candidateDirectoryUrl = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0..<8 {
+            let candidate = candidateDirectoryUrl.appendingPathComponent("clicky-agent/dist/index.js")
             if fileManager.fileExists(atPath: candidate.path) {
-                return candidate
+                return candidateDirectoryUrl.appendingPathComponent("clicky-agent")
             }
+            let parent = candidateDirectoryUrl.deletingLastPathComponent()
+            // Stop if we hit the filesystem root.
+            if parent.path == candidateDirectoryUrl.path { break }
+            candidateDirectoryUrl = parent
         }
 
         throw NSError(

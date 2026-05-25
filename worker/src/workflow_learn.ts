@@ -122,14 +122,12 @@ export async function handleWorkflowLearn(
     console.error(
       `[/workflow/learn] upstream error ${output.upstreamError.status}: ${output.upstreamError.body}`,
     );
-    // The Anthropic message in the original code was "Anthropic API
-    // error: <body>" — keep that wording so the test that asserts on it
-    // still passes. The Azure path produces a similar message in its
-    // own envelope; the only contract here is "non-2xx status + an
-    // `error` string in the body."
+    // Generic "upstream model API" label — applies to whichever backend
+    // (Anthropic or Azure OpenAI) the ModelClient routed to. The UI / Swift
+    // surfaces this string directly, so don't mention a specific provider.
     return jsonError(
       output.upstreamError.status,
-      `Anthropic API error: ${output.upstreamError.body}`,
+      `Upstream model API error: ${output.upstreamError.body}`,
     );
   }
 

@@ -1,0 +1,46 @@
+{
+  "created_from_demo_at" : "2026-05-24T21:30:50.900Z",
+  "decision_rules" : [
+    "roles must be fully remote",
+    "search for data scientist title",
+    "only consider jobs with salary above $100,000",
+    "limit results to top 10 jobs"
+  ],
+  "id" : "wf-39312c41-b0a2-49b5-9bc3-46625ff154ae",
+  "name" : "Search Remote Data Scientist Jobs",
+  "output_format" : "results-list",
+  "parameters" : [
+    {
+      "example_from_demo" : "https:\/\/builtin.com\/jobs\/remote?search=Data+Scientist&country=USA&allLocations=true",
+      "name" : "job_url",
+      "type" : "url"
+    }
+  ],
+  "procedure" : [
+    {
+      "intent" : "navigate to builtin.com",
+      "step_index" : 0
+    },
+    {
+      "intent" : "open remote jobs list",
+      "step_index" : 1
+    },
+    {
+      "intent" : "search for data scientist roles",
+      "step_index" : 2
+    },
+    {
+      "intent" : "review and filter jobs with salary above $100,000",
+      "step_index" : 3
+    },
+    {
+      "intent" : "prepare to collect the top 10 relevant job links",
+      "step_index" : 4
+    }
+  ],
+  "reference_keys" : [
+
+  ],
+  "source_demo_uuid" : "FDDDDD38-2116-4CB8-BB80-A9C6CFC44855",
+  "stop_condition" : "submit-ready"
+}

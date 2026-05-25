@@ -139,6 +139,12 @@ struct CompanionPanelView: View {
                         sessionId: sessionId,
                         workflowOutputFormat: workflowOutputFormat
                     )
+                    // Auto-show the POV window when the user kicks off a
+                    // run. Without this the user has to manually toggle
+                    // POV after Run, and if they toggle it BEFORE the
+                    // first frame arrives the panel sits empty looking
+                    // broken. Opening it here makes Run a one-click flow.
+                    companionManager.setPovWindowVisible(true)
                 }
             )
         }

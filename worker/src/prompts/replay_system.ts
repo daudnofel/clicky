@@ -106,9 +106,19 @@ Rules:
   Keys should be short snake_case-ish strings, values should be human
   display strings (e.g. "$220K" not 220000).
 - \`url\` is the direct link to the item if one is visible in the DOM.
-  Omit the field if there's no per-item link.
-- Extract at most 15 items, picking the ones most prominent at the top
-  of the visible list (the ones the user would scan first).
+  Omit the field if there's no per-item link. **The URL MUST be
+  absolute (start with \`https://\` or \`http://\`).** If the page's href
+  is relative (e.g. \`/job/foo/123\`), prepend the current page's
+  origin from \`CURRENT_URL\` so the result is \`https://example.com/job/foo/123\`.
+  Never emit a relative URL — downstream consumers will treat it as a
+  file path and fail to open.
+- **Item count**: respect any count the user specified in the workflow's
+  \`decision_rules\` or narration (e.g. "top 10 jobs" → extract exactly 10,
+  "top 5" → exactly 5, "the cheapest 3" → exactly 3). If the user didn't
+  state a count anywhere, default to 10 items. Never exceed 15 items
+  regardless — that's the safety ceiling, not a default.
+  Pick the most prominent items at the top of the visible list (the ones
+  the user would scan first).
 - An empty \`results: []\` is acceptable if the final page genuinely has
   no items (zero search results) — say so in \`reasoning\`.
 

@@ -3,11 +3,14 @@ import { getModelClient } from "./get_model_client";
 import { REPLAY_SYSTEM_PROMPT } from "./prompts/replay_system";
 
 /**
- * Cap on the model's response length. A single AgentAction is small — a few
- * hundred tokens at most even when `drafted_text` is long. 1024 leaves
- * plenty of headroom for verbose drafts without inviting runaway output.
+ * Cap on the model's response length. A simple action (fill/click/navigate)
+ * is small — a few hundred tokens — but a results-list halt can carry up to
+ * 15 items, each with a title, ~5 small fields, and a URL. At ~80 tokens
+ * per item plus JSON framing that's ~1500 tokens just for the results array.
+ * 4096 gives comfortable headroom for verbose drafts (cover letters) AND
+ * full results-list halts without ever truncating into invalid JSON.
  */
-const MAX_OUTPUT_TOKENS = 1024;
+const MAX_OUTPUT_TOKENS = 4096;
 
 /**
  * Default action returned when ANYTHING goes wrong (model unreachable,

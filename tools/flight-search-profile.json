@@ -1,0 +1,33 @@
+{
+  "profile": {
+    "id": "wf-88fea26a-d391-4c64-bb12-247dcbc8c217",
+    "name": "Search and Compare Flights",
+    "created_from_demo_at": "2026-05-23T20:27:40.139Z",
+    "source_demo_uuid": "26AC23B6-16AA-4E31-A139-C9A05D21BE76",
+    "procedure": [
+      { "step_index": 0, "intent": "Open a browser and navigate to Google Flights" },
+      { "step_index": 1, "intent": "Enter the origin city in the origin field" },
+      { "step_index": 2, "intent": "Enter the destination city in the destination field" },
+      { "step_index": 3, "intent": "Select the departure date" },
+      { "step_index": 4, "intent": "Select the return date" },
+      { "step_index": 5, "intent": "Trigger the search to view flight results" },
+      { "step_index": 6, "intent": "Halt once the results list is visible (submit-ready)" }
+    ],
+    "parameters": [
+      { "name": "origin_city", "type": "string", "example_from_demo": "Austin" },
+      { "name": "destination_city", "type": "string", "example_from_demo": "New York" },
+      { "name": "depart_date", "type": "date", "example_from_demo": "2026-06-08" },
+      { "name": "return_date", "type": "date", "example_from_demo": "2026-06-12" }
+    ],
+    "decision_rules": [
+      "Search on Google Flights, not the generic Google search results",
+      "Always specify both origin and destination explicitly",
+      "Set clear departure and return dates",
+      "Halt at the results list — do not click any individual flight"
+    ],
+    "reference_keys": [],
+    "style_profile": { "applicable": false },
+    "stop_condition": "submit-ready",
+    "output_format": "review-queue-card"
+  }
+}

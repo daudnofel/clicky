@@ -137,6 +137,33 @@ final class AgentWebSocketClient: ObservableObject {
         connected = true
         lastConnectionErrorMessage = nil
         beginReceiveLoop(for: newTask)
+        // Kick off a short-lived poll that watches the task's state and
+        // flushes the buffered outbound queue the moment it transitions
+        // to .running. Without this, a start_job sent while the task is
+        // still .connecting sits in the buffer forever (because there's
+        // no inbound frame to trigger the receive-loop flush — the agent
+        // hasn't been told to do anything yet).
+        scheduleBufferFlushPollerOn(newTask)
+    }
+
+    private var bufferFlushPollerTask: Task<Void, Never>?
+
+    private func scheduleBufferFlushPollerOn(_ watchedTask: URLSessionWebSocketTask) {
+        bufferFlushPollerTask?.cancel()
+        bufferFlushPollerTask = Task { @MainActor [weak self] in
+            // Poll for up to 5 seconds total. Most ws handshakes resolve
+            // in < 500ms; longer means the agent isn't actually listening.
+            for _ in 0..<25 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard let self,
+                      !Task.isCancelled,
+                      self.currentWebSocketTask === watchedTask else { return }
+                if watchedTask.state == .running {
+                    self.flushQueuedOutboundMessagesIfReadyOn(watchedTask)
+                    return
+                }
+            }
+        }
     }
 
     func disconnect() {
@@ -185,15 +212,41 @@ final class AgentWebSocketClient: ObservableObject {
 
     // MARK: - Sending
 
+    /// Outbound messages queued while the websocket task isn't yet usable.
+    /// Common race: WorkflowRunSheet calls `ensureAgentRunningAndConnected()`
+    /// then immediately calls `send(start_job)` — but the agent subprocess
+    /// hasn't bound port 9876 yet, and the URLSession ws task is in the
+    /// "connecting" state. Without buffering, the send completion fires
+    /// with an error and the start_job is lost; user has to click Run a
+    /// second time. With buffering, the send is queued and flushed the
+    /// moment we receive our first inbound frame (proof the socket is up).
+    private var queuedOutboundMessagesPendingConnection: [[String: Any]] = []
+
     /// Encodes `outgoingMessage` as JSON and sends it. Errors are logged
     /// but not thrown — websocket sends are fire-and-forget at the call sites
     /// (e.g. tapping Approve on a queue card), and surfacing them as throws
     /// just litters those call sites with try/do/catch.
     func send(_ outgoingMessage: [String: Any]) {
-        guard let task = currentWebSocketTask else {
-            print("⚠️ AgentWebSocketClient.send called without an active connection")
+        guard let task = currentWebSocketTask, task.state == .running else {
+            // No active task OR task is still in "connecting" state. Buffer
+            // the message and let `flushQueuedOutboundMessagesAfterConnectionReady`
+            // replay it on the first successful receive.
+            print("ℹ️ AgentWebSocketClient: ws not yet usable, buffering outbound message (type=\(outgoingMessage["type"] ?? "?"))")
+            queuedOutboundMessagesPendingConnection.append(outgoingMessage)
             return
         }
+        sendImmediatelyAssumingTaskIsReady(outgoingMessage, on: task)
+    }
+
+    /// Inner helper — actually serializes + writes to the websocket. Used
+    /// both by the public `send(_:)` (when the task is ready) and by the
+    /// buffer-flush path. Centralizing keeps the JSON-encode logic in one
+    /// place so any future tightening (Sendable, compression, etc.) lands
+    /// in a single edit.
+    private func sendImmediatelyAssumingTaskIsReady(
+        _ outgoingMessage: [String: Any],
+        on task: URLSessionWebSocketTask
+    ) {
         do {
             let payload = try JSONSerialization.data(withJSONObject: outgoingMessage)
             guard let payloadString = String(data: payload, encoding: .utf8) else {
@@ -213,6 +266,21 @@ final class AgentWebSocketClient: ObservableObject {
         }
     }
 
+    /// Drains `queuedOutboundMessagesPendingConnection` onto the now-open
+    /// websocket task. Called from the receive loop's `.success` branch —
+    /// receiving a frame is our proof the bidirectional ws is up.
+    private func flushQueuedOutboundMessagesIfReadyOn(
+        _ readyTask: URLSessionWebSocketTask
+    ) {
+        guard !queuedOutboundMessagesPendingConnection.isEmpty else { return }
+        let messagesToReplay = queuedOutboundMessagesPendingConnection
+        queuedOutboundMessagesPendingConnection.removeAll()
+        print("ℹ️ AgentWebSocketClient: flushing \(messagesToReplay.count) buffered outbound message(s)")
+        for queuedMessage in messagesToReplay {
+            sendImmediatelyAssumingTaskIsReady(queuedMessage, on: readyTask)
+        }
+    }
+
     // MARK: - Receive Loop
 
     /// Drives the read pump. URLSession's receive completion fires once per
@@ -228,6 +296,13 @@ final class AgentWebSocketClient: ObservableObject {
 
                 switch receiveResult {
                 case .success(let incomingMessage):
+                    // First-frame heuristic: if we have any buffered outbound
+                    // messages, the fact that we just received SOMETHING from
+                    // the agent proves the socket is fully up. Flush the queue
+                    // so user actions performed during the spawn race actually
+                    // reach the agent. Common case: WorkflowRunSheet's send()
+                    // of start_job buffered while ws was still connecting.
+                    self.flushQueuedOutboundMessagesIfReadyOn(receivingTask)
                     self.handleIncoming(message: incomingMessage)
                     // Re-arm receive for the next message.
                     self.beginReceiveLoop(for: receivingTask)
